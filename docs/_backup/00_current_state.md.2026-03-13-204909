@@ -1,0 +1,51 @@
+# System Status
+
+System modules currently implemented:
+
+Auth
+Stations
+Carriers
+Picking
+Packing
+Shipping
+Heartbeat
+Import
+
+Architecture:
+
+API → Controllers → Services → Repositories → MySQL
+
+---
+
+# Picking module
+
+Status: IMPLEMENTED
+
+Features:
+
+✔ batch creation  
+✔ order selection  
+✔ product picking  
+✔ missing items  
+✔ manual order drop  
+✔ batch refill  
+✔ batch close  
+✔ batch abandon  
+✔ event log  
+✔ aggregated product list  
+
+Database tables:
+
+picking_batches  
+picking_batch_orders  
+picking_order_items  
+picking_batch_items  
+picking_events  
+
+Workflow:
+
+IMPORT → PICKING → PACKING → SHIPPING
+
+Orders used for picking must have:
+
+pak_orders.status = 10

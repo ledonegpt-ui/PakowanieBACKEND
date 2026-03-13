@@ -1,0 +1,4 @@
+.idea/
+/storage/logs/
+/storage/cache/
+.env

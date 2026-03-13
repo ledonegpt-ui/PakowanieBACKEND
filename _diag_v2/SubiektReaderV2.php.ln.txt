@@ -1,0 +1,388 @@
+    1: <?php
+    2: declare(strict_types=1);
+    3: 
+    4: final class SubiektReaderV2
+    5: {
+    6:     /** @var \PDO */
+    7:     private $mssql;
+    8: 
+    9:     /** @var array */
+   10:     private $cfg;
+   11: 
+   12:     /** @var callable */
+   13:     private $log;
+   14: 
+   15:     /** @var array|null */
+   16:     private $schema = null;
+   17: 
+   18:     /** @var array<string,array<int,string>> */
+   19:     private $mssqlColsCache = [];
+   20: 
+   21:     public function __construct(\PDO $mssql, array $cfg, callable $logger)
+   22:     {
+   23:         $this->mssql = $mssql;
+   24:         $this->cfg   = $cfg;
+   25:         $this->log   = $logger;
+   26:     }
+   27: 
+   28:     /**
+   29:      * Pobiera WSZYSTKIE dokumenty z zakresu dni (SUB_DOC_DAYS_BACK) i filtrów.
+   30:      * Bez TOP/limit, bez paczek.
+   31:      *
+   32:      * @return array<int,array<string,mixed>>
+   33:      */
+   34:     public function fetchDocsAll(): array
+   35:     {
+   36:         $s = $this->getSchema();
+   37: 
+   38:         $daysBack = env_int_val('SUB_DOC_DAYS_BACK', (int)($this->cfg['subiekt']['days_back'] ?? 1));
+   39:         if ($daysBack < 0) $daysBack = 0;
+   40:         if ($daysBack > 30) $daysBack = 30;
+   41: 
+   42:         $today = new \DateTimeImmutable('today');
+   43:         $from  = $today->modify('-' . $daysBack . ' day')->setTime(0, 0, 0);
+   44:         $to    = $today->setTime(23, 59, 59);
+   45: 
+   46:         $pattern = (string)env_val('SUB_PODTYTUL_PATTERN', (string)($this->cfg['subiekt']['podtytul_pattern'] ?? '*'));
+   47:         if ($pattern === '') $pattern = '*';
+   48: 
+   49:         $types = $this->parseIntList((string)env_val('SUB_DOC_TYPES', (string)($this->cfg['subiekt']['doc_types'] ?? '')));
+   50: 
+   51:         $magIdStr = trim((string)env_val('SUB_MAG_ID', (string)($this->cfg['subiekt']['mag_id'] ?? '')));
+   52:         $magId = ($magIdStr !== '' && ctype_digit($magIdStr)) ? (int)$magIdStr : null;
+   53: 
+   54:         $select = [
+   55:             "d.dok_Id AS dok_Id",
+   56:             "d.{$s['noCol']} AS dok_NrPelny",
+   57:             "d.{$s['dateCol']} AS dok_Data",
+   58:             "d.{$s['podCol']} AS dok_Podtytul",
+   59:         ];
+   60:         if (!empty($s['uwCol']))  $select[] = "d.{$s['uwCol']} AS dok_Uwagi";
+   61:         if (!empty($s['typCol'])) $select[] = "d.{$s['typCol']} AS dok_Typ";
+   62: 
+   63:         $sql = "SELECT " . implode(", ", $select) . "
+   64:                 FROM {$s['docTable']} d
+   65:                 WHERE d.{$s['dateCol']} >= :from AND d.{$s['dateCol']} <= :to
+   66:                   AND d.{$s['podCol']} LIKE :pt";
+   67: 
+   68:         $bind = [
+   69:             ':from'  => $from->format('Y-m-d H:i:s'),
+   70:             ':to'    => $to->format('Y-m-d H:i:s'),
+   71:             ':pt'    => '%' . $pattern . '%',
+   72:         ];
+   73: 
+   74:         if ($types && !empty($s['typCol'])) {
+   75:             $in = [];
+   76:             $i = 0;
+   77:             foreach ($types as $t) {
+   78:                 $ph = ':t' . $i++;
+   79:                 $in[] = $ph;
+   80:                 $bind[$ph] = $t;
+   81:             }
+   82:             $sql .= " AND d.{$s['typCol']} IN (" . implode(',', $in) . ")";
+   83:         }
+   84: 
+   85:         if ($magId !== null && !empty($s['magDocCol'])) {
+   86:             $sql .= " AND d.{$s['magDocCol']} = :magD";
+   87:             $bind[':magD'] = $magId;
+   88:         }
+   89: 
+   90:         $sql .= " ORDER BY d.dok_Id ASC";
+   91: 
+   92:         $st = $this->mssql->prepare($sql);
+   93:         $st->execute($bind);
+   94:         return $st->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+   95:     }
+   96: 
+   97:     /**
+   98:      * Zwraca mapę: docId => items[]
+   99:      * (wewnętrznie chunkuje IN(), żeby nie zabić limitów parametrów MSSQL)
+  100:      *
+  101:      * @param array<int,int> $docIds
+  102:      * @return array<int,array<int,array<string,mixed>>>
+  103:      */
+  104:     public function fetchItemsForDocs(array $docIds): array
+  105:     {
+  106:         $docIds = array_values(array_unique(array_filter($docIds, function($v){
+  107:             return is_int($v) && $v > 0;
+  108:         })));
+  109:         if (!$docIds) return [];
+  110: 
+  111:         $s = $this->getSchema();
+  112: 
+  113:         $magIdStr = trim((string)env_val('SUB_MAG_ID', (string)($this->cfg['subiekt']['mag_id'] ?? '')));
+  114:         $magId = ($magIdStr !== '' && ctype_digit($magIdStr)) ? (int)$magIdStr : null;
+  115: 
+  116:         $out = [];
+  117: 
+  118:         foreach (array_chunk($docIds, 500) as $chunk) {
+  119:             $ph = implode(',', array_fill(0, count($chunk), '?'));
+  120: 
+  121:             $sel = [
+  122:                 "p.{$s['posDocCol']} AS dok_Id",
+  123:                 "p.{$s['obIdCol']}  AS ob_Id",
+  124:                 "p.{$s['towIdCol']} AS ob_TowId",
+  125:                 "p.{$s['qtyCol']}   AS ob_Ilosc",
+  126:                 ($s['priceCol'] ? "p.{$s['priceCol']}" : "NULL") . " AS ob_CenaBrutto",
+  127:                 "t.{$s['twSymbolCol']} AS tw_Symbol",
+  128:                 "t.{$s['twNameCol']}   AS tw_Nazwa",
+  129:                 ($s['twOpisCol'] ? "t.{$s['twOpisCol']}" : "NULL") . " AS tw_Opis",
+  130:             ];
+  131: 
+  132:             $sql = "SELECT " . implode(", ", $sel) . "
+  133:                     FROM {$s['posTable']} p
+  134:                     LEFT JOIN {$s['towTable']} t ON p.{$s['towIdCol']} = t.{$s['twIdCol']}
+  135:                     WHERE p.{$s['posDocCol']} IN ($ph)";
+  136: 
+  137:             $bind = $chunk;
+  138: 
+  139:             if ($magId !== null && !empty($s['magPosCol'])) {
+  140:                 $sql .= " AND p.{$s['magPosCol']} = ?";
+  141:                 $bind[] = $magId;
+  142:             }
+  143: 
+  144:             $sql .= " ORDER BY p.{$s['posDocCol']} ASC, p.{$s['obIdCol']} ASC";
+  145: 
+  146:             $st = $this->mssql->prepare($sql);
+  147:             $st->execute($bind);
+  148:             $rows = $st->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+  149: 
+  150:             foreach ($rows as $r) {
+  151:                 $did = (int)$r['dok_Id'];
+  152:                 if (!isset($out[$did])) $out[$did] = [];
+  153:                 $out[$did][] = $r;
+  154:             }
+  155:         }
+  156: 
+  157:         return $out;
+  158:     }
+  159: 
+  160:     /** ---------- schema ----------- */
+  161: 
+  162:     private function getSchema(): array
+  163:     {
+  164:         if ($this->schema !== null) return $this->schema;
+  165: 
+  166:         $cachePath = __DIR__ . '/../../storage/cache/subiekt_schema.php';
+  167:         if (!is_dir(dirname($cachePath))) {
+  168:             @mkdir(dirname($cachePath), 0775, true);
+  169:         }
+  170: 
+  171:         // cache on by default
+  172:         $useCache = (string)env_val('SUB_SCHEMA_CACHE', '1');
+  173:         if ($useCache !== '0' && is_file($cachePath)) {
+  174:             $data = @include $cachePath;
+  175:             if (is_array($data) && isset($data['docTable'], $data['posTable'], $data['towTable'])) {
+  176:                 $this->schema = $data;
+  177:                 ($this->log)("SUBR: schema loaded from cache");
+  178:                 return $this->schema;
+  179:             }
+  180:         }
+  181: 
+  182:         $daysBack = env_int_val('SUB_DOC_DAYS_BACK', (int)($this->cfg['subiekt']['days_back'] ?? 1));
+  183:         if ($daysBack < 0) $daysBack = 0;
+  184:         if ($daysBack > 30) $daysBack = 30;
+  185: 
+  186:         $today = new \DateTimeImmutable('today');
+  187:         $from  = $today->modify('-' . $daysBack . ' day')->setTime(0, 0, 0);
+  188:         $to    = $today->setTime(23, 59, 59);
+  189: 
+  190:         $pattern = (string)env_val('SUB_PODTYTUL_PATTERN', (string)($this->cfg['subiekt']['podtytul_pattern'] ?? '*'));
+  191:         if ($pattern === '') $pattern = '*';
+  192: 
+  193:         $types = $this->parseIntList((string)env_val('SUB_DOC_TYPES', (string)($this->cfg['subiekt']['doc_types'] ?? '')));
+  194: 
+  195:         $this->schema = $this->detectSchema($from, $to, $pattern, $types);
+  196: 
+  197:         // save cache
+  198:         if ($useCache !== '0') {
+  199:             $export = var_export($this->schema, true);
+  200:             @file_put_contents($cachePath, "<?php\nreturn {$export};\n");
+  201:         }
+  202: 
+  203:         ($this->log)("SUBR: schema docTable={$this->schema['docTable']} posTable={$this->schema['posTable']} towTable={$this->schema['towTable']} posDocCol={$this->schema['posDocCol']} twOpisCol=" . ($this->schema['twOpisCol'] ?? 'NULL'));
+  204:         return $this->schema;
+  205:     }
+  206: 
+  207:     private function parseIntList(string $csv): array
+  208:     {
+  209:         if (trim($csv) === '') return [];
+  210:         $out = [];
+  211:         foreach (explode(',', $csv) as $p) {
+  212:             $p = trim($p);
+  213:             if ($p === '' || !ctype_digit($p)) continue;
+  214:             $out[] = (int)$p;
+  215:         }
+  216:         return array_values(array_unique($out));
+  217:     }
+  218: 
+  219:     /** autodetekcja tabel/kolumn + wybór tw_Opis jeśli istnieje */
+  220:     private function detectSchema(\DateTimeImmutable $from, \DateTimeImmutable $to, string $pattern, array $types): array
+  221:     {
+  222:         $docTables = $this->mssql->query("
+  223:             SELECT TABLE_NAME
+  224:             FROM INFORMATION_SCHEMA.COLUMNS
+  225:             WHERE TABLE_NAME LIKE 'dok%'
+  226:             GROUP BY TABLE_NAME
+  227:             HAVING SUM(CASE WHEN COLUMN_NAME='dok_Id' THEN 1 ELSE 0 END) > 0
+  228:                AND SUM(CASE WHEN COLUMN_NAME='dok_Podtytul' THEN 1 ELSE 0 END) > 0
+  229:                AND SUM(CASE WHEN COLUMN_NAME IN ('dok_DataWyst','dok_Data','dok_DataWystaw') THEN 1 ELSE 0 END) > 0
+  230:             ORDER BY TABLE_NAME ASC
+  231:         ")->fetchAll(\PDO::FETCH_COLUMN);
+  232: 
+  233:         $posTables = $this->mssql->query("
+  234:             SELECT TABLE_NAME
+  235:             FROM INFORMATION_SCHEMA.COLUMNS
+  236:             WHERE TABLE_NAME LIKE 'dok%'
+  237:             GROUP BY TABLE_NAME
+  238:             HAVING SUM(CASE WHEN COLUMN_NAME='ob_Id' THEN 1 ELSE 0 END) > 0
+  239:                AND SUM(CASE WHEN COLUMN_NAME='ob_TowId' THEN 1 ELSE 0 END) > 0
+  240:                AND SUM(CASE WHEN COLUMN_NAME IN ('ob_Ilosc','ob_Il') THEN 1 ELSE 0 END) > 0
+  241:                AND SUM(CASE WHEN COLUMN_NAME IN ('ob_DokMagId','ob_DokHanId','ob_DokId','ob_DokumentId') THEN 1 ELSE 0 END) > 0
+  242:             ORDER BY TABLE_NAME ASC
+  243:         ")->fetchAll(\PDO::FETCH_COLUMN);
+  244: 
+  245:         if (!$docTables) throw new \RuntimeException('Brak tabeli dokumentów dok_*');
+  246:         if (!$posTables) throw new \RuntimeException('Brak tabeli pozycji dok_*');
+  247: 
+  248:         $towTable = $this->mssqlTableExists('tw__Towar') ? 'tw__Towar' : $this->detectTowTableAny();
+  249:         if (!$towTable) throw new \RuntimeException('Brak tabeli towarów (tw__Towar lub podobna)');
+  250: 
+  251:         $towCols = $this->mssqlColumns($towTable);
+  252:         $twIdCol = $this->firstCol($towCols, ['tw_Id']);
+  253:         $twSymbolCol = $this->firstCol($towCols, ['tw_Symbol']);
+  254:         $twNameCol = $this->firstCol($towCols, ['tw_Nazwa']);
+  255: 
+  256:         $twOpisCol = $this->firstCol($towCols, ['tw_Opis','tw_OpisWWW','tw_OpisDodatkowy','tw_OpisKrotki','tw_Uwagi','tw_Opis2','tw_Opis3']);
+  257: 
+  258:         if (!$twIdCol || !$twSymbolCol || !$twNameCol) {
+  259:             throw new \RuntimeException("Tabela {$towTable} nie ma tw_Id/tw_Symbol/tw_Nazwa");
+  260:         }
+  261: 
+  262:         foreach ($docTables as $dt) {
+  263:             $dt = (string)$dt;
+  264:             $docCols = $this->mssqlColumns($dt);
+  265:             $dateCol = $this->firstCol($docCols, ['dok_DataWyst','dok_Data','dok_DataWystaw']);
+  266:             $noCol   = $this->firstCol($docCols, ['dok_NrPelny','dok_NrPelnyDruk','dok_NrPelnyTekst']);
+  267:             $podCol  = $this->firstCol($docCols, ['dok_Podtytul']);
+  268:             if (!$dateCol || !$noCol || !$podCol) continue;
+  269: 
+  270:             $typCol = $this->firstCol($docCols, ['dok_Typ','dok_Podtyp']);
+  271:             $uwCol  = $this->firstCol($docCols, ['dok_Uwagi','dok_Opis']);
+  272:             $magDocCol = $this->firstCol($docCols, ['dok_MagId','dok_MagazynId','dok_Mag']);
+  273: 
+  274:             // próbka dokumentu w zakresie
+  275:             $bind = [
+  276:                 ':from' => $from->format('Y-m-d H:i:s'),
+  277:                 ':to'   => $to->format('Y-m-d H:i:s'),
+  278:                 ':pt'   => '%' . $pattern . '%',
+  279:             ];
+  280:             $sql = "SELECT TOP 1 dok_Id FROM {$dt}
+  281:                     WHERE {$dateCol} >= :from AND {$dateCol} <= :to
+  282:                       AND {$podCol} LIKE :pt";
+  283:             if ($types && $typCol) {
+  284:                 $in = [];
+  285:                 $i = 0;
+  286:                 foreach ($types as $t) { $ph=':t'.$i++; $in[]=$ph; $bind[$ph]=$t; }
+  287:                 $sql .= " AND {$typCol} IN (" . implode(',', $in) . ")";
+  288:             }
+  289:             $sql .= " ORDER BY {$dateCol} DESC";
+  290: 
+  291:             $st = $this->mssql->prepare($sql);
+  292:             $st->execute($bind);
+  293:             $sampleDocId = (int)($st->fetchColumn() ?: 0);
+  294:             if ($sampleDocId < 1) continue;
+  295: 
+  296:             foreach ($posTables as $pt) {
+  297:                 $pt = (string)$pt;
+  298:                 $posCols = $this->mssqlColumns($pt);
+  299: 
+  300:                 $obIdCol  = $this->firstCol($posCols, ['ob_Id']);
+  301:                 $towIdCol = $this->firstCol($posCols, ['ob_TowId']);
+  302:                 $qtyCol   = $this->firstCol($posCols, ['ob_Ilosc','ob_Il']);
+  303:                 if (!$obIdCol || !$towIdCol || !$qtyCol) continue;
+  304: 
+  305:                 $priceCol = $this->firstCol($posCols, ['ob_CenaBrutto','ob_CenaBr']);
+  306:                 $magPosCol = $this->firstCol($posCols, ['ob_MagId','ob_MagazynId','ob_Mag']);
+  307: 
+  308:                 $posDocCandidates = [];
+  309:                 foreach (['ob_DokMagId','ob_DokHanId','ob_DokId','ob_DokumentId'] as $c) {
+  310:                     if (in_array($c, $posCols, true)) $posDocCandidates[] = $c;
+  311:                 }
+  312: 
+  313:                 foreach ($posDocCandidates as $posDocCol) {
+  314:                     $chk = $this->mssql->prepare("SELECT TOP 1 {$obIdCol} FROM {$pt} WHERE {$posDocCol} = :id");
+  315:                     $chk->execute([':id' => $sampleDocId]);
+  316:                     $one = $chk->fetchColumn();
+  317:                     if ($one !== false && $one !== null) {
+  318:                         return [
+  319:                             'docTable' => $dt,
+  320:                             'posTable' => $pt,
+  321:                             'towTable' => $towTable,
+  322:                             'dateCol' => $dateCol,
+  323:                             'noCol' => $noCol,
+  324:                             'podCol' => $podCol,
+  325:                             'typCol' => $typCol,
+  326:                             'uwCol' => $uwCol,
+  327:                             'magDocCol' => $magDocCol,
+  328:                             'posDocCol' => $posDocCol,
+  329:                             'obIdCol' => $obIdCol,
+  330:                             'towIdCol' => $towIdCol,
+  331:                             'qtyCol' => $qtyCol,
+  332:                             'priceCol' => $priceCol,
+  333:                             'magPosCol' => $magPosCol,
+  334:                             'twIdCol' => $twIdCol,
+  335:                             'twSymbolCol' => $twSymbolCol,
+  336:                             'twNameCol' => $twNameCol,
+  337:                             'twOpisCol' => $twOpisCol,
+  338:                         ];
+  339:                     }
+  340:                 }
+  341:             }
+  342:         }
+  343: 
+  344:         throw new \RuntimeException('Nie umiem dopasować pozycji do dokumentów (ob_Dok*)');
+  345:     }
+  346: 
+  347:     private function mssqlTableExists(string $table): bool
+  348:     {
+  349:         $st = $this->mssql->prepare("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME=:t");
+  350:         $st->execute([':t'=>$table]);
+  351:         return (bool)$st->fetchColumn();
+  352:     }
+  353: 
+  354:     private function detectTowTableAny(): ?string
+  355:     {
+  356:         $st = $this->mssql->query("
+  357:             SELECT TOP 50 TABLE_NAME
+  358:             FROM INFORMATION_SCHEMA.COLUMNS
+  359:             WHERE TABLE_NAME LIKE 'tw%'
+  360:             GROUP BY TABLE_NAME
+  361:             HAVING SUM(CASE WHEN COLUMN_NAME='tw_Id' THEN 1 ELSE 0 END) > 0
+  362:                AND SUM(CASE WHEN COLUMN_NAME='tw_Symbol' THEN 1 ELSE 0 END) > 0
+  363:                AND SUM(CASE WHEN COLUMN_NAME='tw_Nazwa' THEN 1 ELSE 0 END) > 0
+  364:             ORDER BY TABLE_NAME ASC
+  365:         ");
+  366:         $t = $st ? $st->fetchColumn() : false;
+  367:         return $t ? (string)$t : null;
+  368:     }
+  369: 
+  370:     private function mssqlColumns(string $table): array
+  371:     {
+  372:         if (isset($this->mssqlColsCache[$table])) return $this->mssqlColsCache[$table];
+  373: 
+  374:         $st = $this->mssql->prepare("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=:t");
+  375:         $st->execute([':t'=>$table]);
+  376: 
+  377:         $cols = [];
+  378:         foreach ($st->fetchAll(\PDO::FETCH_ASSOC) as $r) $cols[] = (string)$r['COLUMN_NAME'];
+  379:         $this->mssqlColsCache[$table] = $cols;
+  380:         return $cols;
+  381:     }
+  382: 
+  383:     private function firstCol(array $cols, array $candidates): ?string
+  384:     {
+  385:         foreach ($candidates as $c) if (in_array($c, $cols, true)) return $c;
+  386:         return null;
+  387:     }
+  388: }

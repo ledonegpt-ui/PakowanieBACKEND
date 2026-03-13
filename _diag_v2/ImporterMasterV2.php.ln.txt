@@ -1,0 +1,212 @@
+    1: <?php
+    2: declare(strict_types=1);
+    3: 
+    4: final class ImporterMasterV2
+    5: {
+    6:     private $mysql;
+    7:     private $state;
+    8:     private $repo;
+    9:     private $sub;
+   10:     private $eu;
+   11:     private $bl;
+   12:     private $cfg;
+   13:     private $log;
+   14: 
+   15:     public function __construct(
+   16:         \PDO $mysql,
+   17:         ImportState $state,
+   18:         OrderRepository $repo,
+   19:         SubiektReader $sub,
+   20:         FirebirdEUReader $eu,
+   21:         BaselinkerBatchReader $bl,
+   22:         array $cfg,
+   23:         callable $logger
+   24:     ) {
+   25:         $this->mysql = $mysql;
+   26:         $this->state = $state;
+   27:         $this->repo  = $repo;
+   28:         $this->sub   = $sub;
+   29:         $this->eu    = $eu;
+   30:         $this->bl    = $bl;
+   31:         $this->cfg   = $cfg;
+   32:         $this->log   = $logger;
+   33:     }
+   34: 
+   35:     public function run(): array
+   36:     {
+   37:         $lockName = (string)env_val('IMPORT_LOCK_NAME', (string)($this->cfg['import']['lock_name'] ?? 'import_orders'));
+   38:         if (!$this->acquireLock($lockName, 1)) {
+   39:             ($this->log)("MASTER: lock busy, skip");
+   40:             return ['docs'=>0,'uniq'=>0,'saved'=>0,'skipped'=>0,'incomplete'=>0];
+   41:         }
+   42: 
+   43:         try {
+   44:             $docs = $this->sub->fetchDocsAll();
+   45:             if (!$docs) return ['docs'=>0,'uniq'=>0,'saved'=>0,'skipped'=>0,'incomplete'=>0];
+   46: 
+   47:             $byCode = [];
+   48:             $skipped = 0;
+   49:             foreach ($docs as $d) {
+   50:                 $dokId = (int)$d['dok_Id'];
+   51:                 $code = $this->extractOrderCode((string)($d['dok_Podtytul'] ?? ''));
+   52:                 if ($code === null) { $skipped++; continue; }
+   53: 
+   54:                 if (!isset($byCode[$code]) || (int)$byCode[$code]['dok_Id'] < $dokId) {
+   55:                     $d['order_code'] = $code;
+   56:                     $byCode[$code] = $d;
+   57:                 }
+   58:             }
+   59:             if (!$byCode) return ['docs'=>count($docs),'uniq'=>0,'saved'=>0,'skipped'=>$skipped,'incomplete'=>0];
+   60: 
+   61:             $refDocs = array_values($byCode);
+   62: 
+   63:             $docIds = [];
+   64:             $codesNumeric = [];
+   65:             $codesBL = [];
+   66:             foreach ($refDocs as $d) {
+   67:                 $docIds[] = (int)$d['dok_Id'];
+   68:                 $code = (string)$d['order_code'];
+   69:                 if (preg_match('/^[BE]\d+$/', $code)) $codesBL[] = $code;
+   70:                 elseif (ctype_digit($code)) $codesNumeric[] = (int)$code;
+   71:             }
+   72: 
+   73:             $subItemsMap = $this->sub->fetchItemsForDocs($docIds);
+   74:             $euMap = $this->eu->fetchByMainIds($codesNumeric);
+   75:             $blMap = $this->bl->fetchByOrderCodes($codesBL);
+   76: 
+   77:             $saved = 0;
+   78:             $incomplete = 0;
+   79: 
+   80:             $this->mysql->beginTransaction();
+   81:             try {
+   82:                 foreach ($refDocs as $d) {
+   83:                     $orderCode = (string)$d['order_code'];
+   84:                     $docId = (int)$d['dok_Id'];
+   85:                     $docNo = (string)($d['dok_NrPelny'] ?? '');
+   86:                     $notes = (string)($d['dok_Uwagi'] ?? '');
+   87:                     $hint  = '*' . $orderCode . '*';
+   88: 
+   89:                     $meta = $this->repo->getMeta($orderCode);
+   90: 
+   91:                     $payload = null;
+   92:                     if (isset($euMap[$orderCode])) $payload = $euMap[$orderCode];
+   93:                     if (isset($blMap[$orderCode])) $payload = $blMap[$orderCode];
+   94:                     $h = ($payload && isset($payload['header']) && is_array($payload['header'])) ? $payload['header'] : [];
+   95: 
+   96:                     $nr  = (string)($h['nr_nadania'] ?? '');
+   97:                     $cc  = $h['courier_code'] ?? null;
+   98:                     $cin = $h['courier_inner_number'] ?? null;
+   99:                     $pid = $h['bl_package_id'] ?? null;
+  100:                     $ap  = (string)($h['allegro_parcel_id'] ?? '');
+  101: 
+  102:                     if ($meta !== null) {
+  103:                         // FROZEN B: nic nie nadpisuj. Tylko dopnij puste.
+  104:                         $this->repo->fillSubiektDocIfEmpty($orderCode, $docId, $docNo, $hint, $notes);
+  105:                         $this->repo->fillTrackingIfEmpty($orderCode, $nr, $cc, $cin, $pid);
+  106:                         $this->repo->fillAllegroParcelIfEmpty($orderCode, $ap);
+  107:                         $saved++;
+  108:                         continue;
+  109:                     }
+  110: 
+  111:                     if ($payload === null || empty($payload['header'])) {
+  112:                         ($this->log)("MASTER: INCOMPLETE missing source payload order={$orderCode} doc={$docId}");
+  113:                         $incomplete++;
+  114:                         continue;
+  115:                     }
+  116: 
+  117:                     $subItems = $subItemsMap[$docId] ?? [];
+  118:                     if (!$subItems) {
+  119:                         ($this->log)("MASTER: INCOMPLETE missing subiekt items order={$orderCode} doc={$docId}");
+  120:                         $incomplete++;
+  121:                         continue;
+  122:                     }
+  123: 
+  124:                     $this->repo->insertNewOrFillIfExists([
+  125:                         'order_code' => $orderCode,
+  126:                         'source' => (string)$payload['source'],
+  127:                         'eu_main_id' => $payload['eu_main_id'],
+  128:                         'bl_order_id' => $payload['bl_order_id'],
+  129:                         'shop_order_id' => (string)$payload['shop_order_id'],
+  130: 
+  131:                         'delivery_method' => (string)($h['delivery_method'] ?? ''),
+  132:                         'courier_priority' => 100,
+  133:                         'user_login' => (string)($h['user_login'] ?? ''),
+  134:                         'delivery_fullname' => (string)($h['delivery_fullname'] ?? ''),
+  135:                         'delivery_address' => (string)($h['delivery_address'] ?? ''),
+  136:                         'delivery_city' => (string)($h['delivery_city'] ?? ''),
+  137:                         'delivery_postcode' => (string)($h['delivery_postcode'] ?? ''),
+  138:                         'phone' => (string)($h['phone'] ?? ''),
+  139:                         'email' => (string)($h['email'] ?? ''),
+  140: 
+  141:                         'payment_done' => $h['payment_done'] ?? null,
+  142:                         'payment_method' => (string)($h['payment_method'] ?? ''),
+  143:                         'delivery_price' => $h['delivery_price'] ?? null,
+  144: 
+  145:                         'want_invoice' => (int)($h['want_invoice'] ?? 0),
+  146:                         'invoice_company' => (string)($h['invoice_company'] ?? ''),
+  147:                         'invoice_fullname' => (string)($h['invoice_fullname'] ?? ''),
+  148:                         'invoice_address' => (string)($h['invoice_address'] ?? ''),
+  149:                         'invoice_city' => (string)($h['invoice_city'] ?? ''),
+  150:                         'invoice_postcode' => (string)($h['invoice_postcode'] ?? ''),
+  151:                         'invoice_nip' => (string)($h['invoice_nip'] ?? ''),
+  152: 
+  153:                         'subiekt_hint' => $hint,
+  154:                         'subiekt_doc_id' => $docId,
+  155:                         'subiekt_doc_no' => $docNo,
+  156:                         'notes' => $notes,
+  157: 
+  158:                         'nr_nadania' => $nr,
+  159:                         'courier_code' => $cc,
+  160:                         'courier_inner_number' => $cin,
+  161:                         'bl_package_id' => $pid,
+  162:                         'allegro_parcel_id' => $ap,
+  163:                     ]);
+  164: 
+  165:                     $this->repo->syncSourceItems($orderCode, (string)$payload['source'], $payload['items'] ?? []);
+  166:                     $this->repo->syncSubiektItems($orderCode, $subItems);
+  167: 
+  168:                     $saved++;
+  169:                 }
+  170: 
+  171:                 $this->mysql->commit();
+  172:             } catch (\Throwable $e) {
+  173:                 if ($this->mysql->inTransaction()) $this->mysql->rollBack();
+  174:                 throw $e;
+  175:             }
+  176: 
+  177:             return [
+  178:                 'docs' => count($docs),
+  179:                 'uniq' => count($refDocs),
+  180:                 'saved' => $saved,
+  181:                 'skipped' => $skipped,
+  182:                 'incomplete' => $incomplete,
+  183:             ];
+  184:         } finally {
+  185:             $this->releaseLock($lockName);
+  186:         }
+  187:     }
+  188: 
+  189:     private function extractOrderCode(string $podtytul): ?string
+  190:     {
+  191:         if ($podtytul === '') return null;
+  192:         if (!preg_match('/\*(B\d+|E\d+|\d+)\*/i', $podtytul, $m)) return null;
+  193:         $code = strtoupper(trim((string)$m[1]));
+  194:         if ($code === '' || strlen($code) > 32) return null;
+  195:         if (!preg_match('/^[0-9A-Z]+$/', $code)) return null;
+  196:         return $code;
+  197:     }
+  198: 
+  199:     private function acquireLock(string $name, int $timeoutSec): bool
+  200:     {
+  201:         $st = $this->mysql->prepare("SELECT GET_LOCK(:n, :t) AS l");
+  202:         $st->execute([':n'=>$name, ':t'=>$timeoutSec]);
+  203:         $v = $st->fetchColumn();
+  204:         return (string)$v === '1';
+  205:     }
+  206: 
+  207:     private function releaseLock(string $name): void
+  208:     {
+  209:         $st = $this->mysql->prepare("SELECT RELEASE_LOCK(:n)");
+  210:         $st->execute([':n'=>$name]);
+  211:     }
+  212: }
