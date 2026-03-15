@@ -39,6 +39,8 @@ Base path:
 - `POST /api/v1/picking/orders/{orderId}/drop`
 
 ## Packing
+Uwaga: w route parametr `{orderId}` faktycznie niesie `order_code`.
+
 - `POST /api/v1/packing/orders/{orderId}/open`
 - `GET /api/v1/packing/orders/{orderId}`
 - `POST /api/v1/packing/orders/{orderId}/finish`

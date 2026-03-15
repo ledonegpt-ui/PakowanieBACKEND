@@ -1,11 +1,12 @@
 # Picking
 
 ## Status
-AKTUALNE — zgodne z bieżącym działaniem systemu po wdrożeniu:
+AKTUALNE — zgodne z bieżącym stanem systemu po wdrożeniu:
 - agregacji po `subiekt_tow_id`
 - rozszerzonego modelu produktu
 - trybów doboru batcha
-- przełączenia picking -> packing
+- przełączania `selection_mode` w locie
+- przekazania batcha do packingu po zamknięciu
 
 ## Architektura modułu
 
@@ -15,28 +16,8 @@ Picking jest zorganizowany w układzie:
 - `PickingBatchService`
 - `PickingBatchRepository`
 
-Flow requestu:
-API -> Controller -> Service -> Repository -> MySQL
-
-## Endpointy
-
-### Batch lifecycle
-- `POST /api/v1/picking/batches/open`
-- `GET /api/v1/picking/batches/current`
-- `GET /api/v1/picking/batches/{batchId}`
-- `POST /api/v1/picking/batches/{batchId}/refill`
-- `POST /api/v1/picking/batches/{batchId}/selection-mode`
-- `POST /api/v1/picking/batches/{batchId}/close`
-- `POST /api/v1/picking/batches/{batchId}/abandon`
-
-### Batch content
-- `GET /api/v1/picking/batches/{batchId}/orders`
-- `GET /api/v1/picking/batches/{batchId}/products`
-
-### Picking operations
-- `POST /api/v1/picking/orders/{orderId}/items/{itemId}/picked`
-- `POST /api/v1/picking/orders/{orderId}/items/{itemId}/missing`
-- `POST /api/v1/picking/orders/{orderId}/drop`
+Flow:
+- API -> Controller -> Service -> Repository -> MySQL
 
 ## Tabele używane przez picking
 
@@ -76,13 +57,13 @@ W pickingu source of truth produktu to:
 - `subiekt_tow_id`
 
 Dla kompatybilności:
-- `product_code` zostaje w API i snapshotach,
-- ale jego wartość ma odpowiadać `string(subiekt_tow_id)` dla pozycji zmapowanych,
-- dla fallbacków legacy może mieć techniczny klucz typu `legacy:{pak_order_item_id}`.
+- `product_code` zostaje w API,
+- ale dla poprawnie zmapowanych pozycji jest to string z `subiekt_tow_id`,
+- dla fallbacków legacy może wystąpić techniczny klucz typu `legacy:{pak_order_item_id}`.
 
 Agregacja produktów w batchu działa po:
 - `subiekt_tow_id`
-- oraz `uom`
+- `uom`
 
 ## Snapshot item-level
 
@@ -102,20 +83,6 @@ Snapshot przechowuje między innymi:
 - `picked_qty`
 - `status`
 - `missing_reason`
-
-## Jak działa open batch
-
-1. Operator wybiera `carrier_key`
-2. Opcjonalnie przekazuje `target_orders_count`
-3. Opcjonalnie przekazuje `selection_mode`
-4. System sprawdza czy operator nie ma już otwartego batcha
-5. System wyklucza zamówienia aktywne w innych otwartych batchach
-6. System dobiera zamówienia zgodnie z `selection_mode`
-7. Tworzy rekord w `picking_batches`
-8. Dodaje zamówienia do `picking_batch_orders`
-9. Kopiuje pozycje do `picking_order_items`
-10. Buduje agregaty w `picking_batch_items`
-11. Zapisuje event `batch_opened`
 
 ## Domyślny tryb doboru
 
@@ -138,7 +105,7 @@ Tryb domyślny:
 ### `emergency_single`
 Tryb awaryjny:
 - batch bierze tylko jedno zamówienie
-- kolejność jest oparta o priorytet kuriera, a potem FIFO
+- kolejność jest oparta o `courier_priority DESC`, a potem FIFO
 
 ## Refill
 
@@ -190,8 +157,6 @@ To jest widok zagregowany dla całego batcha:
 - `qty_breakdown_label`
 - `order_breakdown`
 
-To nie są osobne pozycje zamówienia, tylko suma pozycji z wszystkich aktywnych zamówień w batchu.
-
 ## Semantyka akcji operatora
 
 ### `picked`
@@ -210,26 +175,31 @@ To nie są osobne pozycje zamówienia, tylko suma pozycji z wszystkich aktywnych
 - działa order-level
 - usuwa całe zamówienie z batcha
 - przebudowuje agregaty
-- uruchamia refill
+- GUI może po tym wykonać refill
 
-## Semantyka `X`
+## Semantyka przycisków GUI
 
-Kliknięcie `X`:
+### `X`
 - dropuje całe zamówienie z bieżącego batcha
-- powoduje refill bieżącego batcha
-- nie powinno zwracać tego ordera do tego samego batcha przy refill
-- może uwolnić order dla innych batchy
+
+### `Brak`
+- oznacza konkretną pozycję jako `missing`
+- pozycja zostaje świadomie rozliczona jako brak
+
+### `Zakończono -> packing`
+- GUI zamyka batch
+- następnie przechodzi do packingu
 
 ## Zamknięcie batcha
 
 Batch można zamknąć tylko wtedy, gdy:
 - nie ma już orderów w statusie `assigned`
 
-Typowy flow operatora:
+Typowy flow:
 1. wszystkie pozycje rozliczone jako `picked` lub `missing`
-2. batch nie ma już assigned orderów
+2. batch nie ma już `assigned`
 3. operator zamyka batch
-4. GUI może przejść do packingu
+4. GUI przechodzi do packingu
 
 ## Event log
 
