@@ -19,7 +19,7 @@ final class PickingBatchRepository
     {
         $sql = "
             SELECT id, batch_code, carrier_key, user_id, station_id,
-                   status, workflow_mode, target_orders_count,
+                   status, workflow_mode, selection_mode, target_orders_count,
                    started_at, completed_at, abandoned_at
             FROM picking_batches
             WHERE user_id = :user_id
@@ -37,7 +37,7 @@ final class PickingBatchRepository
     {
         $sql = "
             SELECT id, batch_code, carrier_key, user_id, station_id,
-                   status, workflow_mode, target_orders_count,
+                   status, workflow_mode, selection_mode, target_orders_count,
                    started_at, completed_at, abandoned_at
             FROM picking_batches
             WHERE user_id = :user_id
@@ -56,7 +56,7 @@ final class PickingBatchRepository
     {
         $sql = "
             SELECT id, batch_code, carrier_key, user_id, station_id,
-                   status, workflow_mode, target_orders_count,
+                   status, workflow_mode, selection_mode, target_orders_count,
                    started_at, completed_at, abandoned_at
             FROM picking_batches
             WHERE id = :id
@@ -72,7 +72,7 @@ final class PickingBatchRepository
     {
         $sql = "
             SELECT id, batch_code, carrier_key, user_id, station_id,
-                   status, workflow_mode, target_orders_count,
+                   status, workflow_mode, selection_mode, target_orders_count,
                    started_at, completed_at, abandoned_at
             FROM picking_batches
             WHERE id = :id
@@ -108,15 +108,16 @@ final class PickingBatchRepository
         int $userId,
         int $stationId,
         string $workflowMode,
+        string $selectionMode,
         int $targetOrdersCount
     ): int {
         $sql = "
             INSERT INTO picking_batches
                 (batch_code, carrier_key, user_id, station_id, status,
-                 workflow_mode, target_orders_count, started_at, created_at, updated_at)
+                 workflow_mode, selection_mode, target_orders_count, started_at, created_at, updated_at)
             VALUES
                 (:batch_code, :carrier_key, :user_id, :station_id, 'open',
-                 :workflow_mode, :target_orders_count, NOW(), NOW(), NOW())
+                 :workflow_mode, :selection_mode, :target_orders_count, NOW(), NOW(), NOW())
         ";
         $st = $this->db->prepare($sql);
         $st->execute([
@@ -125,6 +126,7 @@ final class PickingBatchRepository
             ':user_id'             => $userId,
             ':station_id'          => $stationId,
             ':workflow_mode'       => $workflowMode,
+            ':selection_mode'      => $selectionMode,
             ':target_orders_count' => $targetOrdersCount,
         ]);
         return (int)$this->db->lastInsertId();
@@ -141,6 +143,21 @@ final class PickingBatchRepository
         ";
         $st = $this->db->prepare($sql);
         $st->execute([':id' => $batchId]);
+    }
+
+    public function updateBatchSelectionMode(int $batchId, string $selectionMode): void
+    {
+        $sql = "
+            UPDATE picking_batches
+            SET selection_mode = :selection_mode,
+                updated_at = NOW()
+            WHERE id = :id
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':id' => $batchId,
+            ':selection_mode' => $selectionMode,
+        ]);
     }
 
     public function countActiveBatchOrders(int $batchId): int
@@ -240,6 +257,55 @@ final class PickingBatchRepository
         return $result;
     }
 
+    public function findAvailableOrdersForGroupEmergencySingle(
+        string $carrierKey,
+        array $excludeOrderCodes,
+        array $mapCfg
+    ): array {
+        $margin = 200;
+
+        $excludeClause = '';
+        $params = [];
+
+        if (!empty($excludeOrderCodes)) {
+            $excPlaceholders = implode(',', array_fill(0, count($excludeOrderCodes), '?'));
+            $excludeClause = "AND order_code NOT IN ($excPlaceholders)";
+            $params = $excludeOrderCodes;
+        }
+
+        $params[] = $margin;
+
+        $sql = "
+            SELECT order_code, delivery_method, carrier_code, courier_code, courier_priority, imported_at
+            FROM pak_orders
+            WHERE status = 10
+              $excludeClause
+            ORDER BY courier_priority DESC, imported_at ASC, order_code ASC
+            LIMIT ?
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute($params);
+        $candidates = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
+        $resolver = new ShippingMethodResolver($mapCfg);
+
+        foreach ($candidates as $row) {
+            $resolved = $resolver->resolve([
+                'delivery_method' => (string)($row['delivery_method'] ?? ''),
+                'carrier_code'    => (string)($row['carrier_code'] ?? ''),
+                'courier_code'    => (string)($row['courier_code'] ?? ''),
+            ]);
+
+            if ((string)$resolved['menu_group'] === $carrierKey) {
+                return array($row);
+            }
+        }
+
+        return array();
+    }
+
     // -------------------------------------------------------------------------
     // BATCH ORDERS
     // -------------------------------------------------------------------------
@@ -293,22 +359,22 @@ final class PickingBatchRepository
     public function getBatchOrders(int $batchId): array
     {
         $sql = "
-            SELECT
-                pbo.id,
-                pbo.order_code,
-                pbo.status,
-                pbo.drop_reason,
-                pbo.assigned_at,
-                pbo.removed_at,
-                po.delivery_method,
-                po.carrier_code,
-                po.courier_code
-            FROM picking_batch_orders pbo
-            INNER JOIN pak_orders po ON po.order_code = pbo.order_code
-            WHERE pbo.batch_id = :batch_id
-              AND pbo.status NOT IN ('dropped')
-            ORDER BY pbo.assigned_at ASC
-        ";
+        SELECT
+            pbo.id,
+            pbo.order_code,
+            pbo.status,
+            pbo.drop_reason,
+            pbo.assigned_at,
+            pbo.removed_at,
+            po.delivery_method,
+            po.carrier_code,
+            po.courier_code
+        FROM picking_batch_orders pbo
+        INNER JOIN pak_orders po ON po.order_code = pbo.order_code
+        WHERE pbo.batch_id = :batch_id
+          AND pbo.status NOT IN ('dropped')
+        ORDER BY pbo.assigned_at ASC, pbo.id ASC
+    ";
         $st = $this->db->prepare($sql);
         $st->execute([':batch_id' => $batchId]);
         $orders = $st->fetchAll(PDO::FETCH_ASSOC);
@@ -324,31 +390,47 @@ final class PickingBatchRepository
         $placeholders = implode(',', array_fill(0, count($batchOrderIds), '?'));
 
         $sqlItems = "
-            SELECT
-                poi.id,
-                poi.batch_order_id,
-                poi.pak_order_item_id,
-                poi.product_code,
-                poi.product_name,
-                poi.expected_qty,
-                poi.picked_qty,
-                poi.status,
-                poi.missing_reason
-            FROM picking_order_items poi
-            WHERE poi.batch_order_id IN ($placeholders)
-            ORDER BY poi.batch_order_id ASC, poi.id ASC
-        ";
+        SELECT
+            poi.id,
+            poi.batch_order_id,
+            poi.pak_order_item_id,
+            poi.subiekt_tow_id,
+            poi.subiekt_symbol,
+            poi.subiekt_desc,
+            poi.source_name,
+            poi.product_code,
+            poi.product_name,
+            poi.uom,
+            poi.is_unmapped,
+            poi.expected_qty,
+            poi.picked_qty,
+            poi.status,
+            poi.missing_reason
+        FROM picking_order_items poi
+        WHERE poi.batch_order_id IN ($placeholders)
+        ORDER BY poi.batch_order_id ASC, poi.id ASC
+    ";
         $stItems = $this->db->prepare($sqlItems);
         $stItems->execute($batchOrderIds);
         $items = $stItems->fetchAll(PDO::FETCH_ASSOC);
 
         $itemsByBatchOrderId = [];
         foreach ($items as $item) {
+            $subiektTowId = isset($item['subiekt_tow_id']) && $item['subiekt_tow_id'] !== null
+                ? (int)$item['subiekt_tow_id']
+                : null;
+
             $itemsByBatchOrderId[(int)$item['batch_order_id']][] = [
                 'id'               => (int)$item['id'],
                 'pak_order_item_id'=> (int)$item['pak_order_item_id'],
+                'subiekt_tow_id'   => $subiektTowId,
+                'subiekt_symbol'   => $item['subiekt_symbol'] !== null ? (string)$item['subiekt_symbol'] : null,
+                'subiekt_desc'     => $item['subiekt_desc'] !== null ? (string)$item['subiekt_desc'] : null,
+                'source_name'      => $item['source_name'] !== null ? (string)$item['source_name'] : null,
                 'product_code'     => (string)$item['product_code'],
                 'product_name'     => (string)$item['product_name'],
+                'uom'              => $item['uom'] !== null ? (string)$item['uom'] : null,
+                'is_unmapped'      => (bool)$item['is_unmapped'],
                 'expected_qty'     => (float)$item['expected_qty'],
                 'picked_qty'       => (float)$item['picked_qty'],
                 'status'           => (string)$item['status'],
@@ -363,6 +445,7 @@ final class PickingBatchRepository
 
         return $orders;
     }
+
 
     public function dropBatchOrder(int $batchOrderId, string $reason): void
     {
@@ -407,55 +490,97 @@ final class PickingBatchRepository
     public function getOrderItems(string $orderCode): array
     {
         $sql = "
-            SELECT item_id, order_code, sku, name, subiekt_desc,
-                   quantity, image_url
-            FROM pak_order_items
-            WHERE order_code = :order_code
-        ";
+        SELECT item_id, order_code, offer_id, subiekt_tow_id, subiekt_symbol, sku, name, subiekt_desc,
+               quantity, image_url, NULL AS uom
+        FROM pak_order_items
+        WHERE order_code = :order_code
+    ";
         $st = $this->db->prepare($sql);
         $st->execute([':order_code' => $orderCode]);
         return $st->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    public function getOrderItemsForOrderCodes(array $orderCodes): array
+    {
+        if (empty($orderCodes)) {
+            return array();
+        }
+
+        $placeholders = implode(',', array_fill(0, count($orderCodes), '?'));
+
+        $sql = "
+        SELECT item_id, order_code, offer_id, subiekt_tow_id, subiekt_symbol, sku, name, subiekt_desc,
+               quantity, image_url, NULL AS uom
+        FROM pak_order_items
+        WHERE order_code IN ($placeholders)
+        ORDER BY order_code ASC, item_id ASC
+    ";
+        $st = $this->db->prepare($sql);
+        $st->execute(array_values($orderCodes));
+        return $st->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+
     public function insertPickingOrderItem(
         int $batchOrderId,
         int $pakOrderItemId,
+        ?int $subiektTowId,
+        ?string $subiektSymbol,
+        ?string $subiektDesc,
+        ?string $sourceName,
         string $productCode,
         string $productName,
+        ?string $uom,
+        bool $isUnmapped,
         float $expectedQty
     ): int {
         $sql = "
-            INSERT INTO picking_order_items
-                (batch_order_id, pak_order_item_id, product_code, product_name,
-                 expected_qty, picked_qty, status, created_at, updated_at)
-            VALUES
-                (:batch_order_id, :pak_order_item_id, :product_code, :product_name,
-                 :expected_qty, 0, 'pending', NOW(), NOW())
-            ON DUPLICATE KEY UPDATE
-                expected_qty = VALUES(expected_qty),
-                updated_at = NOW()
-        ";
+        INSERT INTO picking_order_items
+            (batch_order_id, pak_order_item_id, subiekt_tow_id, subiekt_symbol, subiekt_desc, source_name, product_code, product_name,
+             uom, is_unmapped, expected_qty, picked_qty, status, created_at, updated_at)
+        VALUES
+            (:batch_order_id, :pak_order_item_id, :subiekt_tow_id, :subiekt_symbol, :subiekt_desc, :source_name, :product_code, :product_name,
+             :uom, :is_unmapped, :expected_qty, 0, 'pending', NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            subiekt_tow_id = VALUES(subiekt_tow_id),
+            subiekt_symbol = VALUES(subiekt_symbol),
+            subiekt_desc = VALUES(subiekt_desc),
+            source_name = VALUES(source_name),
+            product_code = VALUES(product_code),
+            product_name = VALUES(product_name),
+            uom = VALUES(uom),
+            is_unmapped = VALUES(is_unmapped),
+            expected_qty = VALUES(expected_qty),
+            updated_at = NOW()
+    ";
         $st = $this->db->prepare($sql);
         $st->execute([
             ':batch_order_id'    => $batchOrderId,
             ':pak_order_item_id' => $pakOrderItemId,
+            ':subiekt_tow_id'    => $subiektTowId,
+            ':subiekt_symbol'    => $subiektSymbol,
+            ':subiekt_desc'      => $subiektDesc,
+            ':source_name'       => $sourceName,
             ':product_code'      => $productCode,
             ':product_name'      => $productName,
+            ':uom'               => $uom,
+            ':is_unmapped'       => $isUnmapped ? 1 : 0,
             ':expected_qty'      => $expectedQty,
         ]);
         return (int)$this->db->lastInsertId();
     }
 
+
     public function findPickingOrderItem(int $batchOrderId, int $pakOrderItemId): ?array
     {
         $sql = "
-            SELECT id, batch_order_id, pak_order_item_id, product_code,
-                   product_name, expected_qty, picked_qty, status, missing_reason
-            FROM picking_order_items
-            WHERE batch_order_id = :batch_order_id
-              AND pak_order_item_id = :pak_order_item_id
-            LIMIT 1
-        ";
+        SELECT id, batch_order_id, pak_order_item_id, subiekt_tow_id, subiekt_symbol, subiekt_desc, source_name, product_code,
+               product_name, uom, is_unmapped, expected_qty, picked_qty, status, missing_reason
+        FROM picking_order_items
+        WHERE batch_order_id = :batch_order_id
+          AND pak_order_item_id = :pak_order_item_id
+        LIMIT 1
+    ";
         $st = $this->db->prepare($sql);
         $st->execute([
             ':batch_order_id'    => $batchOrderId,
@@ -465,16 +590,17 @@ final class PickingBatchRepository
         return $row ?: null;
     }
 
+
     public function findPickingOrderItemById(int $batchOrderId, int $itemId): ?array
     {
         $sql = "
-            SELECT id, batch_order_id, pak_order_item_id, product_code,
-                   product_name, expected_qty, picked_qty, status, missing_reason
-            FROM picking_order_items
-            WHERE batch_order_id = :batch_order_id
-              AND id = :id
-            LIMIT 1
-        ";
+        SELECT id, batch_order_id, pak_order_item_id, subiekt_tow_id, subiekt_symbol, subiekt_desc, source_name, product_code,
+               product_name, uom, is_unmapped, expected_qty, picked_qty, status, missing_reason
+        FROM picking_order_items
+        WHERE batch_order_id = :batch_order_id
+          AND id = :id
+        LIMIT 1
+    ";
         $st = $this->db->prepare($sql);
         $st->execute([
             ':batch_order_id' => $batchOrderId,
@@ -483,6 +609,7 @@ final class PickingBatchRepository
         $row = $st->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
     }
+
 
     public function markItemPicked(int $itemId, float $pickedQty, int $userId): void
     {
@@ -527,55 +654,203 @@ final class PickingBatchRepository
     public function rebuildBatchItems(int $batchId): void
     {
         $sqlDelete = "DELETE FROM picking_batch_items WHERE batch_id = :batch_id";
-        $st = $this->db->prepare($sqlDelete);
+        $stDelete = $this->db->prepare($sqlDelete);
+        $stDelete->execute([':batch_id' => $batchId]);
+
+        $sql = "
+        SELECT
+            pbo.id AS batch_order_id,
+            pbo.order_code,
+            pbo.assigned_at,
+            poi.id,
+            poi.pak_order_item_id,
+            poi.subiekt_tow_id,
+            poi.subiekt_symbol,
+            poi.subiekt_desc,
+            poi.source_name,
+            poi.product_code,
+            poi.product_name,
+            poi.uom,
+            poi.is_unmapped,
+            poi.expected_qty,
+            poi.picked_qty,
+            poi.status
+        FROM picking_batch_orders pbo
+        INNER JOIN picking_order_items poi ON poi.batch_order_id = pbo.id
+        WHERE pbo.batch_id = :batch_id
+          AND pbo.status NOT IN ('dropped')
+        ORDER BY pbo.assigned_at ASC, pbo.id ASC, poi.id ASC
+    ";
+        $st = $this->db->prepare($sql);
         $st->execute([':batch_id' => $batchId]);
+        $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        if (empty($rows)) {
+            return;
+        }
+
+        $aggregates = [];
+
+        foreach ($rows as $row) {
+            $subiektTowId = isset($row['subiekt_tow_id']) && $row['subiekt_tow_id'] !== null
+                ? (int)$row['subiekt_tow_id']
+                : null;
+            $uom = $row['uom'] !== null ? trim((string)$row['uom']) : null;
+            if ($uom === '') {
+                $uom = null;
+            }
+
+            $isUnmapped = (bool)$row['is_unmapped'] || $subiektTowId === null || $subiektTowId <= 0;
+            $aggregateKey = $this->buildBatchAggregateKey(
+                $subiektTowId,
+                $uom,
+                $isUnmapped,
+                (int)$row['pak_order_item_id']
+            );
+
+            if (!isset($aggregates[$aggregateKey])) {
+                $aggregates[$aggregateKey] = [
+                    'batch_id'            => $batchId,
+                    'subiekt_tow_id'      => $isUnmapped ? null : $subiektTowId,
+                    'subiekt_symbol'      => $row['subiekt_symbol'] !== null ? (string)$row['subiekt_symbol'] : null,
+                    'subiekt_desc'        => $row['subiekt_desc'] !== null ? (string)$row['subiekt_desc'] : null,
+                    'source_name'         => $row['source_name'] !== null ? (string)$row['source_name'] : null,
+                    'product_code'        => (string)$row['product_code'],
+                    'product_name'        => (string)$row['product_name'],
+                    'uom'                 => $uom,
+                    'is_unmapped'         => $isUnmapped,
+                    'total_expected_qty'  => 0.0,
+                    'total_picked_qty'    => 0.0,
+                    'total_missing_qty'   => 0.0,
+                    'remaining_qty'       => 0.0,
+                    'status_counts'       => [],
+                    'qty_breakdown'       => [],
+                    'order_breakdown_map' => [],
+                ];
+            }
+
+            $expectedQty = (float)$row['expected_qty'];
+            $pickedQty   = (float)$row['picked_qty'];
+            $itemStatus  = (string)$row['status'];
+
+            $aggregates[$aggregateKey]['total_expected_qty'] += $expectedQty;
+            $aggregates[$aggregateKey]['total_picked_qty'] += $pickedQty;
+            if ($itemStatus === 'missing') {
+                $aggregates[$aggregateKey]['total_missing_qty'] += $expectedQty;
+            }
+            $aggregates[$aggregateKey]['status_counts'][$itemStatus] =
+                ($aggregates[$aggregateKey]['status_counts'][$itemStatus] ?? 0) + 1;
+            $aggregates[$aggregateKey]['qty_breakdown'][] = $this->castQtyForPayload($expectedQty);
+
+            $orderCode = (string)$row['order_code'];
+            if (!isset($aggregates[$aggregateKey]['order_breakdown_map'][$orderCode])) {
+                $aggregates[$aggregateKey]['order_breakdown_map'][$orderCode] = [
+                    'order_code'    => $orderCode,
+                    'qty'           => 0.0,
+                    'item_ids'      => [],
+                    'item_count'    => 0,
+                    'status_counts' => [],
+                ];
+            }
+
+            $aggregates[$aggregateKey]['order_breakdown_map'][$orderCode]['qty'] += $expectedQty;
+            $aggregates[$aggregateKey]['order_breakdown_map'][$orderCode]['item_ids'][] = (int)$row['id'];
+            $aggregates[$aggregateKey]['order_breakdown_map'][$orderCode]['item_count']++;
+            $aggregates[$aggregateKey]['order_breakdown_map'][$orderCode]['status_counts'][$itemStatus] =
+                ($aggregates[$aggregateKey]['order_breakdown_map'][$orderCode]['status_counts'][$itemStatus] ?? 0) + 1;
+        }
 
         $sqlInsert = "
-            INSERT INTO picking_batch_items
-                (batch_id, product_code, product_name,
-                 total_expected_qty, total_picked_qty, status,
-                 created_at, updated_at)
-            SELECT
-                pb.id AS batch_id,
-                poi.product_code,
-                poi.product_name,
-                SUM(poi.expected_qty) AS total_expected_qty,
-                SUM(poi.picked_qty)   AS total_picked_qty,
-                CASE
-                    WHEN SUM(poi.expected_qty) <= SUM(poi.picked_qty) THEN 'picked'
-                    WHEN SUM(poi.picked_qty) > 0 THEN 'partial'
-                    ELSE 'pending'
-                END AS status,
-                NOW(),
-                NOW()
-            FROM picking_batch_orders pbo
-            INNER JOIN picking_batches pb ON pb.id = pbo.batch_id
-            INNER JOIN picking_order_items poi ON poi.batch_order_id = pbo.id
-            WHERE pb.id = :batch_id
-              AND pbo.status NOT IN ('dropped')
-            GROUP BY pb.id, poi.product_code, poi.product_name
-        ";
-        $st = $this->db->prepare($sqlInsert);
-        $st->execute([':batch_id' => $batchId]);
+        INSERT INTO picking_batch_items
+            (batch_id, subiekt_tow_id, subiekt_symbol, subiekt_desc, source_name, product_code, product_name, uom, is_unmapped,
+             total_expected_qty, total_picked_qty, total_missing_qty, remaining_qty, status,
+             qty_breakdown_json, qty_breakdown_label, order_breakdown_json, created_at, updated_at)
+        VALUES
+            (:batch_id, :subiekt_tow_id, :subiekt_symbol, :subiekt_desc, :source_name, :product_code, :product_name, :uom, :is_unmapped,
+             :total_expected_qty, :total_picked_qty, :total_missing_qty, :remaining_qty, :status,
+             :qty_breakdown_json, :qty_breakdown_label, :order_breakdown_json, NOW(), NOW())
+    ";
+        $stInsert = $this->db->prepare($sqlInsert);
+
+        foreach ($aggregates as $aggregate) {
+            $aggregate['remaining_qty'] = $aggregate['total_expected_qty']
+                - $aggregate['total_picked_qty']
+                - $aggregate['total_missing_qty'];
+            $aggregate['status'] = $this->determineBreakdownStatus($aggregate['status_counts']);
+
+            $qtyBreakdown = array_values($aggregate['qty_breakdown']);
+            $qtyBreakdownLabel = implode('+', array_map([$this, 'formatQtyLabelPart'], $qtyBreakdown));
+
+            $orderBreakdown = [];
+            foreach ($aggregate['order_breakdown_map'] as $orderRow) {
+                $orderBreakdown[] = [
+                    'order_code'     => (string)$orderRow['order_code'],
+                    'qty'            => $this->castQtyForPayload((float)$orderRow['qty']),
+                    'item_ids'       => array_values(array_map('intval', $orderRow['item_ids'])),
+                    'item_count'     => (int)$orderRow['item_count'],
+                    'status_summary' => $this->determineBreakdownStatus($orderRow['status_counts']),
+                ];
+            }
+
+            $stInsert->execute([
+                ':batch_id'             => (int)$aggregate['batch_id'],
+                ':subiekt_tow_id'       => $aggregate['subiekt_tow_id'],
+                ':subiekt_symbol'       => $aggregate['subiekt_symbol'],
+                ':subiekt_desc'         => $aggregate['subiekt_desc'],
+                ':source_name'          => $aggregate['source_name'],
+                ':product_code'         => (string)$aggregate['product_code'],
+                ':product_name'         => (string)$aggregate['product_name'],
+                ':uom'                  => $aggregate['uom'],
+                ':is_unmapped'          => $aggregate['is_unmapped'] ? 1 : 0,
+                ':total_expected_qty'   => (float)$aggregate['total_expected_qty'],
+                ':total_picked_qty'     => (float)$aggregate['total_picked_qty'],
+                ':total_missing_qty'    => (float)$aggregate['total_missing_qty'],
+                ':remaining_qty'        => (float)$aggregate['remaining_qty'],
+                ':status'               => (string)$aggregate['status'],
+                ':qty_breakdown_json'   => json_encode($qtyBreakdown, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ':qty_breakdown_label'  => $qtyBreakdownLabel,
+                ':order_breakdown_json' => json_encode($orderBreakdown, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            ]);
+        }
     }
+
 
     public function getBatchItems(int $batchId): array
     {
         $sql = "
-            SELECT id, product_code, product_name,
-                   total_expected_qty, total_picked_qty, status
-            FROM picking_batch_items
-            WHERE batch_id = :batch_id
-            ORDER BY product_name ASC
-        ";
+        SELECT id, subiekt_tow_id, subiekt_symbol, subiekt_desc, source_name, product_code, product_name, uom, is_unmapped,
+               total_expected_qty, total_picked_qty, total_missing_qty, remaining_qty,
+               status, qty_breakdown_json, qty_breakdown_label, order_breakdown_json
+        FROM picking_batch_items
+        WHERE batch_id = :batch_id
+        ORDER BY product_name ASC, product_code ASC
+    ";
         $st = $this->db->prepare($sql);
         $st->execute([':batch_id' => $batchId]);
-        return $st->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($rows as &$row) {
+            $row['subiekt_tow_id'] = $row['subiekt_tow_id'] !== null ? (string)$row['subiekt_tow_id'] : null;
+            $row['subiekt_symbol'] = $row['subiekt_symbol'] !== null ? (string)$row['subiekt_symbol'] : null;
+            $row['subiekt_desc'] = $row['subiekt_desc'] !== null ? (string)$row['subiekt_desc'] : null;
+            $row['source_name'] = $row['source_name'] !== null ? (string)$row['source_name'] : null;
+            $row['uom'] = $row['uom'] !== null ? (string)$row['uom'] : null;
+            $row['is_unmapped'] = (bool)$row['is_unmapped'];
+            $row['total_expected_qty'] = (float)$row['total_expected_qty'];
+            $row['total_picked_qty'] = (float)$row['total_picked_qty'];
+            $row['total_missing_qty'] = (float)$row['total_missing_qty'];
+            $row['remaining_qty'] = (float)$row['remaining_qty'];
+            $row['qty_breakdown'] = $this->decodeJsonArray($row['qty_breakdown_json']);
+            unset($row['qty_breakdown_json']);
+            $row['qty_breakdown_label'] = (string)($row['qty_breakdown_label'] ?? '');
+            $row['order_breakdown'] = $this->decodeJsonArray($row['order_breakdown_json']);
+            unset($row['order_breakdown_json']);
+        }
+        unset($row);
+
+        return $rows;
     }
 
-    // -------------------------------------------------------------------------
-    // EVENTS
-    // -------------------------------------------------------------------------
 
     public function logEvent(
         int $batchId,
@@ -604,6 +879,72 @@ final class PickingBatchRepository
             ':payload_json'   => $payload ? json_encode($payload, JSON_UNESCAPED_UNICODE) : null,
             ':user_id'        => $userId,
         ]);
+    }
+
+// -------------------------------------------------------------------------
+// HELPERS
+// -------------------------------------------------------------------------
+
+    private function buildBatchAggregateKey(?int $subiektTowId, ?string $uom, bool $isUnmapped, int $pakOrderItemId): string
+    {
+        if ($isUnmapped || $subiektTowId === null || $subiektTowId <= 0) {
+            return 'legacy:' . $pakOrderItemId;
+        }
+
+        return 'subiekt:' . $subiektTowId . '|uom:' . $this->normalizeUom($uom);
+    }
+
+    private function normalizeUom(?string $uom): string
+    {
+        $uom = $uom !== null ? trim((string)$uom) : '';
+        return $uom === '' ? '' : strtolower($uom);
+    }
+
+    private function determineBreakdownStatus(array $statusCounts): string
+    {
+        $pendingCount = (int)($statusCounts['pending'] ?? 0);
+        $pickedCount  = (int)($statusCounts['picked'] ?? 0);
+        $missingCount = (int)($statusCounts['missing'] ?? 0);
+
+        if ($pendingCount > 0 && $pickedCount === 0 && $missingCount === 0) {
+            return 'pending';
+        }
+
+        if ($pickedCount > 0 && $pendingCount === 0 && $missingCount === 0) {
+            return 'picked';
+        }
+
+        return 'partial';
+    }
+
+    private function castQtyForPayload(float $qty)
+    {
+        $rounded = round($qty, 3);
+        if (abs($rounded - round($rounded)) < 0.00001) {
+            return (int)round($rounded);
+        }
+
+        return $rounded;
+    }
+
+    private function formatQtyLabelPart($qty): string
+    {
+        if (is_int($qty)) {
+            return (string)$qty;
+        }
+
+        $formatted = number_format((float)$qty, 3, '.', '');
+        return rtrim(rtrim($formatted, '0'), '.');
+    }
+
+    private function decodeJsonArray($json): array
+    {
+        if ($json === null || $json === '') {
+            return [];
+        }
+
+        $decoded = json_decode((string)$json, true);
+        return is_array($decoded) ? $decoded : [];
     }
 
     // -------------------------------------------------------------------------
@@ -639,4 +980,3 @@ final class PickingBatchRepository
         $st->execute([':id' => $batchId]);
     }
 }
-// placeholder

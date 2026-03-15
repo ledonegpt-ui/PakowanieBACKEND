@@ -63,6 +63,9 @@ $routes = [
     ['POST', '/api/v1/picking/batches/{batchId}/refill', function (array $params): void {
         (new PickingBatchesController())->refill($params);
     }],
+    ['POST', '/api/v1/picking/batches/{batchId}/selection-mode', function (array $params): void {
+        (new PickingBatchesController())->selectionMode($params);
+    }],
     ['POST', '/api/v1/picking/batches/{batchId}/close', function (array $params): void {
         (new PickingBatchesController())->close($params);
     }],

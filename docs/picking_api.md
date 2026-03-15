@@ -1,302 +1,169 @@
-========================================
-# Picking API — dokumentacja
+cat > docs/picking_api.md <<'MD'
+# Picking API
 
-## Przegląd
+## Status
+AKTUALNE — zgodne z bieżącym działaniem systemu:
+- agregacja po `subiekt_tow_id`
+- rozszerzony model produktu (`subiekt_symbol`, `subiekt_desc`, `source_name`, `product_name`)
+- tryby doboru batcha
+- przełączanie trybu w locie
+- flow picking -> packing
 
-Picking to etap kompletacji towaru przed pakowaniem.
-Operator wybiera grupę kurierską, system dobiera zamówienia do batcha,
-operator zbiera towar z magazynu oznaczając pozycje jako zebrane lub brakujące.
+## Base path
 
----
-
-## Tabele
-
-| Tabela | Opis |
-|---|---|
-| `picking_batches` | Nadrzędny rekord partii roboczej |
-| `picking_batch_orders` | Zamówienia przypisane do batcha |
-| `picking_order_items` | Pozycje zamówień do zebrania |
-| `picking_batch_items` | Zagregowana lista produktów dla batcha |
-| `picking_events` | Audit log wszystkich akcji |
-
-### Statusy
-
-**picking_batches.status**
-- `open` — batch aktywny, operator pracuje
-- `completed` — batch zamknięty
-
-**picking_batch_orders.status**
-- `assigned` — zamówienie aktywne, w trakcie kompletacji
-- `picked` — wszystkie pozycje zebrane
-- `dropped` — zamówienie wypadło z batcha
-
-**picking_order_items.status**
-- `pending` — pozycja czeka na zebranie
-- `picked` — pozycja zebrana
-- `missing` — brak na magazynie
-
----
-
-## Endpointy
-
-Wszystkie endpointy wymagają nagłówka:
+```text
+/api/v1
 ```
+
+## Autoryzacja
+
+Wszystkie endpointy pickingu wymagają:
+
+```http
 Authorization: Bearer {token}
 ```
 
 ---
 
-### POST /api/v1/picking/batches/open
+## Model działania
+
+Picking działa na dwóch poziomach:
+
+### 1. `orders`
+To jest warstwa operacyjna:
+- order-level
+- item-level
+- służy do akcji:
+    - `picked`
+    - `missing`
+    - `drop`
+
+### 2. `products`
+To jest warstwa do renderowania listy zbiorczej:
+- agregacja po produkcie magazynowym
+- source of truth produktu = `subiekt_tow_id`
+- agregacja po:
+    - `subiekt_tow_id`
+    - `uom`
+
+GUI głównego pickingu powinno renderować listę właśnie z `products`.
+GUI nie powinno liczyć własnej agregacji po orderach.
+
+---
+
+## Statusy
+
+### `picking_batches.status`
+- `open`
+- `completed`
+- `abandoned`
+
+### `picking_batch_orders.status`
+- `assigned`
+- `picked`
+- `dropped`
+
+### `picking_order_items.status`
+- `pending`
+- `picked`
+- `missing`
+
+### `picking_batch_items.status`
+- `pending`
+- `partial`
+- `picked`
+
+---
+
+## Tryby doboru batcha
+
+Dozwolone `selection_mode`:
+- `cutoff`
+- `cutoff_cluster`
+- `emergency_single`
+
+Domyślny tryb:
+- `cutoff_cluster`
+
+### `cutoff`
+FIFO:
+- system bierze najstarsze dostępne zamówienia
+- sortowanie bazowe po `imported_at ASC, order_code ASC`
+
+### `cutoff_cluster`
+Tryb domyślny:
+- pierwszy order jest wybierany jak w cutoff
+- kolejne ordery są dobierane preferencyjnie po wspólnych produktach
+- dopasowanie działa po `subiekt_tow_id + uom`
+- jeśli nie uda się dobrać wystarczająco podobnych orderów, system dopełnia batch zwykłym cutoffem
+
+### `emergency_single`
+Tryb awaryjny:
+- batch bierze jedno zamówienie
+- wybór działa po:
+    - `courier_priority DESC`
+    - następnie `imported_at ASC`
+    - następnie `order_code ASC`
+
+---
+
+## Endpointy
+
+## `POST /api/v1/picking/batches/open`
 
 Otwiera nowy batch dla operatora.
 
-**Request:**
+### Request
+
 ```json
 {
-  "carrier_key": "dpd",
-  "target_orders_count": 10
+  "carrier_key": "inpost",
+  "target_orders_count": 10,
+  "selection_mode": "cutoff_cluster"
 }
 ```
 
-| Pole | Typ | Wymagane | Opis |
-|---|---|---|---|
-| `carrier_key` | string | tak | Klucz grupy kurierskiej np. `dpd`, `inpost`, `gls` |
-| `target_orders_count` | int | nie | Liczba zamówień w batchu, domyślnie 10, max 50 |
+### Pola requestu
 
-**Response:**
+- `carrier_key` — wymagane
+- `target_orders_count` — opcjonalne
+- `selection_mode` — opcjonalne
+
+### Domyślne zachowanie
+
+Jeżeli `selection_mode` nie jest podane:
+- używany jest `cutoff_cluster`
+
+Jeżeli `selection_mode = emergency_single`:
+- system wymusza `target_orders_count = 1`
+
+### Response
+
 ```json
 {
   "ok": true,
   "data": {
     "picking": {
       "batch": {
-        "id": 4,
-        "batch_code": "BATCH-1773182921-1",
-        "carrier_key": "dpd",
+        "id": 3,
+        "batch_code": "BATCH-1773528111-1",
+        "carrier_key": "inpost",
         "user_id": 1,
-        "station_id": 1,
+        "station_id": 11,
         "status": "open",
         "workflow_mode": "integrated",
-        "target_orders_count": 10,
-        "active_orders_count": 10,
+        "selection_mode": "cutoff_cluster",
+        "target_orders_count": 3,
+        "started_at": "2026-03-14 23:41:51",
+        "completed_at": null,
+        "abandoned_at": null,
+        "active_orders_count": 3,
         "picked_orders_count": 0,
         "dropped_orders_count": 0,
-        "total_orders_count": 10,
-        "started_at": "2026-03-10 23:41:45",
-        "completed_at": null,
-        "abandoned_at": null
+        "total_orders_count": 3
       },
-      "orders": [...],
-      "products": [...]
-    }
-  }
-}
-```
-
-**Błędy:**
-- `400` — operator ma już otwarty batch
-- `400` — brak zamówień dla podanej grupy
-- `400` — brak `carrier_key`
-
-**Logika:**
-1. Sprawdza czy operator nie ma otwartego batcha (jeden na raz)
-2. Pobiera kandydatów z `pak_orders` gdzie `status = 10`
-3. Przepuszcza każde zamówienie przez `ShippingMethodResolver`
-4. Wyklucza zamówienia zajęte w innych otwartych batchach
-5. Tworzy batch, przypisuje zamówienia i pozycje
-6. Buduje agregaty `picking_batch_items`
-7. Loguje event `batch_opened`
-8. Całość w transakcji MySQL z `SELECT FOR UPDATE`
-
----
-
-### GET /api/v1/picking/batches/current
-
-Zwraca aktualnie otwarty batch operatora.
-
-**Response:**
-```json
-{
-  "ok": true,
-  "data": {
-    "picking": {
-      "batch": { ... },
-      "orders": [...],
-      "products": [...]
-    }
-  }
-}
-```
-
-Jeśli operator nie ma otwartego batcha, `picking` jest `null`.
-
----
-
-### GET /api/v1/picking/batches/{batchId}
-
-Zwraca szczegóły konkretnego batcha.
-
-**Response:** identyczny jak `/current`
-
-**Błędy:**
-- `400` — batch nie istnieje
-- `400` — batch należy do innego operatora lub stanowiska
-
----
-
-### GET /api/v1/picking/batches/{batchId}/orders
-
-Zwraca listę zamówień w batchu.
-
-**Response:**
-```json
-{
-  "ok": true,
-  "data": {
-    "orders": [
-      {
-        "id": 1,
-        "order_code": "1873329",
-        "status": "assigned",
-        "drop_reason": null,
-        "assigned_at": "2026-03-10 23:41:45",
-        "removed_at": null,
-        "delivery_method": "Kurier DPD",
-        "carrier_code": null,
-        "courier_code": null
-      }
-    ]
-  }
-}
-```
-
----
-
-### GET /api/v1/picking/batches/{batchId}/products
-
-Zwraca zagregowaną listę produktów do zebrania dla całego batcha.
-
-**Response:**
-```json
-{
-  "ok": true,
-  "data": {
-    "products": [
-      {
-        "id": 1,
-        "product_code": "SKU-123",
-        "product_name": "Nazwa produktu",
-        "total_expected_qty": "6.000",
-        "total_picked_qty": "0.000",
-        "status": "pending"
-      }
-    ]
-  }
-}
-```
-
-**Status agregatu:**
-- `pending` — nic jeszcze nie zebrano
-- `partial` — część zebrana
-- `picked` — wszystko zebrane
-
----
-
-### POST /api/v1/picking/orders/{orderCode}/items/{pakItemId}/picked
-
-Oznacza pozycję zamówienia jako zebraną.
-
-`pakItemId` to `pak_order_item_id` z tabeli `pak_order_items`.
-
-**Request:** brak body
-
-**Response:**
-```json
-{
-  "ok": true,
-  "data": {
-    "picking": {
-      "order_code": "1873329",
-      "pak_item_id": 1251,
-      "status": "picked",
-      "order_status": "picked"
-    }
-  }
-}
-```
-
-`order_status` = `picked` gdy wszystkie pozycje zamówienia są zebrane, `assigned` gdy jeszcze nie.
-
-**Logika:**
-1. Ustawia `picked_qty = expected_qty`, `status = picked`
-2. Sprawdza czy wszystkie pozycje zamówienia są picked
-3. Jeśli tak — ustawia `picking_batch_orders.status = picked`
-4. Przebudowuje agregaty `picking_batch_items`
-5. Loguje event `item_picked`
-
----
-
-### POST /api/v1/picking/orders/{orderCode}/items/{pakItemId}/missing
-
-Oznacza pozycję jako brakującą. Automatycznie dropuje zamówienie i odpala refill.
-
-**Request:**
-```json
-{
-  "reason": "brak na magazynie"
-}
-```
-
-| Pole | Typ | Wymagane | Opis |
-|---|---|---|---|
-| `reason` | string | **tak** | Powód braku |
-
-**Response:**
-```json
-{
-  "ok": true,
-  "data": {
-    "picking": {
-      "order_code": "1873329",
-      "pak_item_id": 1251,
-      "status": "missing"
-    }
-  }
-}
-```
-
-**Logika:**
-1. Oznacza pozycję jako `missing` z powodem
-2. Loguje event `item_missing`
-3. Dropuje zamówienie z batcha (`order_dropped`)
-4. Automatycznie odpala refill — dobiera nowe zamówienie
-
----
-
-### POST /api/v1/picking/orders/{orderCode}/drop
-
-Ręczne usunięcie zamówienia z batcha. Automatycznie odpala refill.
-
-**Request:**
-```json
-{
-  "reason": "uszkodzony towar"
-}
-```
-
-| Pole | Typ | Wymagane | Opis |
-|---|---|---|---|
-| `reason` | string | **tak** | Powód dropu |
-
-**Response:**
-```json
-{
-  "ok": true,
-  "data": {
-    "picking": {
-      "order_code": "1873329",
-      "status": "dropped",
-      "reason": "uszkodzony towar"
+      "orders": [],
+      "products": []
     }
   }
 }
@@ -304,460 +171,411 @@ Ręczne usunięcie zamówienia z batcha. Automatycznie odpala refill.
 
 ---
 
-### POST /api/v1/picking/batches/{batchId}/refill
+## `GET /api/v1/picking/batches/current`
 
-Ręczne dobranie zamówień do batcha (do targetu).
+Zwraca aktualny otwarty batch operatora.
 
-**Request:** brak body
+### Response
+- jeśli operator ma otwarty batch: zwracany jest pełny payload pickingu
+- jeśli operator nie ma otwartego batcha: `picking = null`
 
-**Response:**
+---
+
+## `GET /api/v1/picking/batches/{batchId}`
+
+Zwraca pełny szczegół batcha:
+- `batch`
+- `orders`
+- `products`
+
+---
+
+## `POST /api/v1/picking/batches/{batchId}/refill`
+
+Dobiera kolejne zamówienia do batcha.
+
+### Logika
+Refill:
+- bierze aktualny `selection_mode` zapisany w batchu
+- wyklucza zamówienia aktywne w innych open batchach
+- wyklucza zamówienia już użyte wcześniej w tym samym batchu
+- dobiera brakującą liczbę orderów do `target_orders_count`
+
+### Response
+
 ```json
 {
   "ok": true,
   "data": {
     "picking": {
-      "refilled": 1,
-      "active_orders": 10
+      "refilled": 2,
+      "active_orders": 3
     }
   }
 }
 ```
 
-**Logika:**
-1. Liczy ile aktywnych zamówień zostało
-2. Oblicza ile brakuje do `target_orders_count`
-3. Wyklucza wszystkie zamówienia które kiedykolwiek były w tym batchu
-4. Wyklucza zamówienia aktywne w innych otwartych batchach
-5. Dobiera brakującą liczbę nowych zamówień
-6. Całość w transakcji z `SELECT FOR UPDATE`
-
 ---
 
-### POST /api/v1/picking/batches/{batchId}/close
+## `POST /api/v1/picking/batches/{batchId}/selection-mode`
 
-Zamyka batch. Możliwe tylko gdy wszystkie aktywne zamówienia mają status `picked`.
+Zmienia tryb doboru batcha w locie.
 
-**Request:** brak body
+### Request
 
-**Response:**
+```json
+{
+  "selection_mode": "emergency_single"
+}
+```
+
+### Response
+
 ```json
 {
   "ok": true,
   "data": {
     "picking": {
-      "batch_id": 4,
+      "batch_id": 3,
+      "selection_mode": "emergency_single",
+      "status": "updated"
+    }
+  }
+}
+```
+
+### Ważne
+Zmiana:
+- zapisuje nowy tryb do batcha
+- nie przebudowuje aktualnie przypisanych orderów
+- wpływa na kolejne refill
+
+---
+
+## `POST /api/v1/picking/batches/{batchId}/close`
+
+Zamyka batch.
+
+### Warunek
+Batch może zostać zamknięty tylko wtedy, gdy:
+- nie ma już orderów w statusie `assigned`
+
+### Response
+
+```json
+{
+  "ok": true,
+  "data": {
+    "picking": {
+      "batch_id": 3,
       "status": "completed"
     }
   }
 }
 ```
 
-**Błędy:**
-- `400` — są zamówienia ze statusem `assigned` (nie wszystko zebrane)
-- `400` — batch nie należy do operatora
-
 ---
 
-## Bezpieczeństwo
+## `POST /api/v1/picking/batches/{batchId}/abandon`
 
-- Wszystkie endpointy wymagają bearer tokenu
-- Każda akcja mutująca sprawdza czy batch należy do operatora (`user_id`) i stanowiska (`station_id`)
-- `open` i `refill` używają transakcji MySQL z `SELECT FOR UPDATE` — zabezpieczenie przed wyścigami
+Porzuca batch.
 
----
+### Response
 
-## Events (picking_events)
-
-| event_type | Kiedy |
-|---|---|
-| `batch_opened` | Otwarcie batcha |
-| `item_picked` | Zebranie pozycji |
-| `item_missing` | Brak pozycji |
-| `order_dropped` | Drop zamówienia (manual lub po missing) |
-| `batch_refilled` | Dobranie nowych zamówień |
-| `batch_closed` | Zamknięcie batcha |
-
-Każdy event zawiera w `payload_json`:
-- `batch_id`
-- `user_id`
-- kontekstowe pola zależne od typu eventu
-
----
-
-## Reguły biznesowe
-
-1. Jeden operator = jeden otwarty batch naraz
-2. Zamówienie nie może być w dwóch otwartych batchach jednocześnie
-3. Resolver decyduje o grupie kurierskiej — nie surowy `delivery_method`
-4. Brak na pozycji = automatyczny drop zamówienia
-5. Drop = automatyczny refill
-6. Dropped zamówienie nigdy nie wraca do tego samego batcha
-7. Batch można zamknąć tylko gdy wszystkie aktywne zamówienia są picked
-8. `reason` jest obowiązkowy dla `missing` i `drop`
-9. Agregaty `picking_batch_items` są przebudowywane po każdej akcji
-10. Agregaty uwzględniają tylko zamówienia ze statusem innym niż `dropped`
-
----
-
-## Heartbeat
-
-### POST /api/v1/heartbeat
-
-Podtrzymuje aktywność sesji operatora. Kotlin wywołuje co 60 sekund.
-
-**Request:** brak body
-
-**Response:**
-```json
-{
-  "ok": true,
-  "data": {
-    "heartbeat": {
-      "picking_batch_id": 12,
-      "packing_session_id": null,
-      "ts": "2026-03-11 10:00:00"
-    }
-  }
-}
-```
-
-Jeśli operator nie ma żadnej aktywnej sesji zwraca:
-```json
-{
-  "ok": true,
-  "data": {
-    "heartbeat": {
-      "status": "no_active_session",
-      "ts": "2026-03-11 10:00:00"
-    }
-  }
-}
-```
-
----
-
-## Abandon
-
-### POST /api/v1/picking/batches/{batchId}/abandon
-
-Ręczne porzucenie batcha przez operatora (nagły wypadek, koniec zmiany).
-
-**Request:** brak body, brak wymaganego powodu
-
-**Response:**
 ```json
 {
   "ok": true,
   "data": {
     "picking": {
-      "batch_id": 12,
+      "batch_id": 3,
       "status": "abandoned"
     }
   }
 }
 ```
 
-**Błędy:**
-- `400` — batch nie istnieje
-- `400` — batch nie należy do operatora
-- `400` — batch nie jest open
+---
 
-**Co się dzieje z zamówieniami:**
-Zamówienia z abandoned batcha automatycznie wracają do puli — `getOrderCodesInOpenBatches()` filtruje tylko po `pb.status = 'open'`. Inny operator może je natychmiast dobrać.
+## `GET /api/v1/picking/batches/{batchId}/orders`
+
+Zwraca order-level dane robocze do operacji.
+
+### Response — przykład
+
+```json
+{
+  "ok": true,
+  "data": {
+    "orders": [
+      {
+        "id": 9,
+        "order_code": "1894352",
+        "status": "assigned",
+        "drop_reason": null,
+        "assigned_at": "2026-03-14 23:41:51",
+        "removed_at": null,
+        "delivery_method": "Allegro Paczkomaty InPost (Smart)",
+        "carrier_code": null,
+        "courier_code": null,
+        "items": [
+          {
+            "id": 31,
+            "pak_order_item_id": 1,
+            "subiekt_tow_id": 3698,
+            "subiekt_symbol": "B1643",
+            "subiekt_desc": "czarno-złoty PAJĄK zwis POTRÓJNY na żarówke 3 x e27 czarno-złoty",
+            "source_name": "ADAPTER WTYCZKA UNIWERSALNA BIAŁA",
+            "product_code": "3698",
+            "product_name": "ADAPTER WTYCZKA UNIWERSALNA BIAŁA",
+            "uom": null,
+            "is_unmapped": false,
+            "expected_qty": 1,
+            "picked_qty": 0,
+            "status": "pending",
+            "missing_reason": null
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Znaczenie pól itemu
+
+- `subiekt_tow_id` — główny identyfikator produktu
+- `subiekt_symbol` — symbol z Subiekta
+- `subiekt_desc` — opis z Subiekta
+- `source_name` — nazwa źródłowa z `pak_order_items.name`
+- `product_code` — alias kompatybilności, zwykle `string(subiekt_tow_id)`
+- `product_name` — finalna nazwa do GUI
+- `expected_qty` — ilość oczekiwana
+- `picked_qty` — ilość zebrana
+- `status` — `pending|picked|missing`
 
 ---
 
-## Mechanizm timeout (cron)
+## `GET /api/v1/picking/batches/{batchId}/products`
 
-Skrypt `bin/abandon_stale_sessions.php` odpala się co minutę przez cron.
+Zwraca zagregowaną listę produktów dla batcha.
 
-Warunki abandon:
-- batch status = `open`
-- `last_seen_at IS NULL` i batch otwarty > 5 minut (operator nigdy nie wysłał heartbeatu)
-- `last_seen_at IS NOT NULL` i ostatni heartbeat > 5 minut temu
+### Główna zasada
+Agregacja działa po:
+- `subiekt_tow_id`
+- `uom`
 
-Po abandon:
-- `picking_batches.status = abandoned`
-- `picking_batches.abandoned_at = NOW()`
-- event `batch_abandoned` z `reason = heartbeat_timeout` w `picking_events`
-- zamówienia wracają do puli
+### Response — przykład
 
-Log: `storage/logs/cron_abandon.log`
+```json
+{
+  "ok": true,
+  "data": {
+    "products": [
+      {
+        "id": 86,
+        "subiekt_tow_id": "4045",
+        "subiekt_symbol": "B0192",
+        "subiekt_desc": "8W ! VINTAGE GRUSZKA 8W ciepła filament ; AI 199166 ; LL 3376",
+        "source_name": "ŻARÓWKA VINTAGE 8W CIEPŁA",
+        "product_code": "4045",
+        "product_name": "ŻARÓWKA VINTAGE 8W CIEPŁA",
+        "uom": null,
+        "is_unmapped": false,
+        "total_expected_qty": 3,
+        "total_picked_qty": 0,
+        "total_missing_qty": 0,
+        "remaining_qty": 3,
+        "status": "pending",
+        "qty_breakdown": [3],
+        "qty_breakdown_label": "3",
+        "order_breakdown": [
+          {
+            "order_code": "1894352",
+            "qty": 3,
+            "item_ids": [32],
+            "item_count": 1,
+            "status_summary": "pending"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Znaczenie pól produktu
+
+- `subiekt_tow_id` — source of truth produktu
+- `subiekt_symbol` — symbol z Subiekta
+- `subiekt_desc` — opis z Subiekta
+- `source_name` — nazwa źródłowa
+- `product_code` — alias kompatybilności
+- `product_name` — finalna nazwa do GUI
+- `total_expected_qty` — suma oczekiwana
+- `total_picked_qty` — suma zebrana
+- `total_missing_qty` — suma braków
+- `remaining_qty` — ile realnie zostało do zebrania
+- `qty_breakdown` — tablica źródłowych ilości, np. `[1,2,6]`
+- `qty_breakdown_label` — string do prostego renderu, np. `1+2+6`
+- `order_breakdown` — rozbicie per order
+
+### Status agregatu
+
+- `pending` — wszystkie itemy pending
+- `picked` — wszystkie itemy picked i brak missing
+- `partial` — dowolny miks picked/pending/missing lub wszystko missing
 
 ---
 
-## Statusy — kompletna lista
+## `POST /api/v1/picking/orders/{orderId}/items/{itemId}/picked`
 
-**picking_batches.status**
-| Status | Opis |
-|---|---|
-| `open` | Batch aktywny |
-| `completed` | Zamknięty przez operatora po zebraniu wszystkiego |
-| `abandoned` | Porzucony ręcznie lub przez timeout heartbeatu |
+Oznacza konkretny item jako zebrany.
 
-**picking_batch_orders.status**
-| Status | Opis |
-|---|---|
-| `assigned` | Aktywne, w trakcie kompletacji |
-| `picked` | Wszystkie pozycje zebrane |
-| `dropped` | Wypadło z batcha (missing lub ręczny drop) |
+### Request
+Brak body.
 
-**picking_order_items.status**
-| Status | Opis |
-|---|---|
-| `pending` | Czeka na zebranie |
-| `picked` | Zebrana |
-| `missing` | Brak na magazynie |
+### Response
 
-**picking_batch_items.status (agregaty)**
-| Status | Opis |
-|---|---|
-| `pending` | Nic nie zebrano |
-| `partial` | Część zebrana |
-| `picked` | Wszystko zebrane |
+```json
+{
+  "ok": true,
+  "data": {
+    "picking": {
+      "order_id": 9,
+      "order_code": "1894352",
+      "item_id": 31,
+      "pak_item_id": 1,
+      "status": "picked",
+      "order_status": "assigned"
+    }
+  }
+}
+```
+
+### Logika
+- działa item-level
+- aktualizuje `picked_qty`
+- przebudowuje agregaty
+- gdy order nie ma już itemów `pending`, może przejść do `picked`
 
 ---
 
-## Wymagane działania po stronie Kotlin (tablet)
+## `POST /api/v1/picking/orders/{orderId}/items/{itemId}/missing`
 
-| Co | Endpoint | Kiedy |
-|---|---|---|
-| Heartbeat | `POST /api/v1/heartbeat` | Co 60 sekund gdy batch otwarty |
-| Heartbeat po reconnect | `POST /api/v1/heartbeat` | Natychmiast po odzyskaniu połączenia |
-| Abandon | `POST /api/v1/picking/batches/{id}/abandon` | Przycisk "porzuć" w UI |
+Oznacza pozycję jako brakującą.
 
-**Ważne dla Kotlina:**
-- heartbeat musi być wysyłany agresywnie po reconnect — 5 minut to bufor na krótkie zerwania
-- przy stracie połączenia > 5 minut batch zostanie abandoned przez cron — po reconnect Kotlin powinien sprawdzić `GET /api/v1/picking/batches/current` czy batch nadal istnieje
-- jeśli `current` zwróci null — batch został abandoned, operator musi otworzyć nowy
+### Request
 
-========================================
-FILE: docs/system/01_system_context.md
-========================================
-# 01. Kontekst systemu
+```json
+{
+  "reason": "brak na półce"
+}
+```
 
-## Status
-POTWIERDZONE + PLANOWANE
+### Response
 
-## Cel systemu
-Celem systemu jest obsługa procesu:
-- importu zamówień do bazy lokalnej,
-- logowania operatora,
-- wyboru stanowiska,
-- wyboru grupy kurierskiej,
-- kompletacji produktów,
-- pakowania zamówienia,
-- wygenerowania listu przewozowego i etykiety,
-- wydruku etykiety,
-- zapisania zdarzeń operacyjnych.
+```json
+{
+  "ok": true,
+  "data": {
+    "picking": {
+      "order_id": 9,
+      "order_code": "1894352",
+      "item_id": 31,
+      "pak_item_id": 1,
+      "status": "missing"
+    }
+  }
+}
+```
 
-## Środowisko techniczne
-POTWIERDZONE:
-- PHP 7.2
-- MySQL 5.7
-- serwer HTTP z rewrite do `/api/v1`
-- aplikacja docelowa: tablet / Kotlin
-- projekt działa bez nowoczesnego frameworka typu Laravel/Symfony
-- trzeba zachować kompatybilność z PHP 7.2
+### Logika
+- działa item-level
+- zostawia świadomy brak
+- nie usuwa całego ordera z batcha
+- przebudowuje agregaty
 
-## Obecny stan projektu
-POTWIERDZONE:
-- aktywny projekt został odchudzony
-- stary system został przeniesiony do `starysystem/`
-- w aktywnym projekcie zostawiono:
-  - bootstrap,
-  - konfigurację,
-  - DB layer,
-  - importer i repo importowe,
-  - nową strukturę katalogów API/module,
-  - nowe migracje dla auth/shipping/picking/packing/audit
+---
 
-## Zachowane elementy krytyczne
-POTWIERDZONE:
-- `app/bootstrap.php`
-- `app/Lib/Db.php`
-- `app/Services/ImportState.php`
-- `app/Services/ImporterMasterV2.php`
-- `app/Services/BaselinkerBatchReader.php`
-- `app/Services/SubiektReaderV2.php`
-- `app/Services/FirebirdEUReader.php`
-- `app/Services/OrderRepositoryV2.php`
-- `app/Services/LegacyAuctionPhotoMap.php`
-- `bin/import_orders_master_v2.php`
+## `POST /api/v1/picking/orders/{orderId}/drop`
 
-## Zewnętrzne integracje
-POTWIERDZONE lub PLANOWANE:
-- BaseLinker
-- Allegro API
-- InPost ShipX
-- DPD API
-- DHL API
-- GLS API
-- ORLEN / Packeta API
-- źródła importu:
-  - MSSQL / Subiekt
-  - Firebird EU
-  - BaseLinker
+Usuwa całe zamówienie z batcha.
 
-## Docelowy tryb działania
-PLANOWANE:
-- dziś: tryb zintegrowany `integrated`
-  - ten sam operator może kompletować i pakować
-- przyszłość: rozdzielenie ról
-  - komisjoner zbiera,
-  - pakowacz pakuje
+### Request
 
-## Kluczowa zasada dla nowych programistów
-Nie wolno zakładać, że:
-- `menu_group == label_provider`
-- `delivery_method` samo w sobie wystarcza do logiki etykiety
-- stare statusy `pak_orders.status` są już finalnie uzgodnione
-- logika starego systemu przeglądarkowego jest wiążąca dla nowego API
+```json
+{
+  "reason": "missing_items"
+}
+```
 
-========================================
-FILE: docs/system/02_workflow_target.md
-========================================
-# 02. Workflow docelowy
+### Response
 
-## Status
-PLANOWANE + częściowo POTWIERDZONE
+```json
+{
+  "ok": true,
+  "data": {
+    "picking": {
+      "order_id": 9,
+      "order_code": "1894352",
+      "status": "dropped",
+      "reason": "missing_items"
+    }
+  }
+}
+```
 
-## 1. Logowanie operatora
-Operator loguje się przez:
-- skan kodu kreskowego operatora,
-- wskazanie stanowiska.
+### Logika
+- działa order-level
+- usuwa całe zamówienie z bieżącego batcha
+- przebudowuje agregaty
+- uruchamia refill
 
-Wynik:
-- powstaje sesja w `user_station_sessions`,
-- operator dostaje bearer token,
-- aplikacja zna aktualne stanowisko i tryb workflow.
+### Ważne
+Kliknięcie `X` w GUI odpowiada właśnie tej operacji.
 
-## 2. Menu kafelków kurierskich
-Aplikacja pobiera listę grup menu:
-- InPost
-- DPD
-- GLS
-- ORLEN
-- Allegro One
-- DHL
-- ERLI
-- Odbiór osobisty
-- Inne (fallback awaryjny)
+---
 
-Każdy kafelek pokazuje:
-- `group_key`
-- `label`
-- `orders_count`
-- przykładowe metody dostawy w tej grupie
+## Relacja z GUI
 
-## 3. Otwarcie batcha kompletacyjnego
-Operator wybiera kafelek `menu_group`, np. `dpd`.
+### GUI pickingu
+Powinno:
+- renderować główną listę z `products`
+- pokazywać:
+    - `product_name`
+    - `subiekt_symbol`
+    - `subiekt_desc`
+    - sumę do zebrania
+    - breakdown `qty_breakdown_label`
+- używać `orders.items` do akcji item-level
 
-Backend:
-- znajduje pierwsze N otwartych zamówień pasujących do `menu_group`,
-- pomija zamówienia już przypisane do innych otwartych batchy,
-- tworzy `picking_batches`,
-- tworzy `picking_batch_orders`,
-- tworzy `picking_order_items`,
-- tworzy zagregowaną listę `picking_batch_items`.
+### GUI nie powinno
+- liczyć własnej agregacji po orderach
+- agregować po `offer_id`
+- traktować `offer_id` jako identyfikatora magazynowego
 
-## 4. Kompletacja produktów
-Aplikacja pokazuje listę produktów do zebrania:
-- kod / SKU
-- nazwa
-- suma wymaganych ilości
-- status
+---
 
-Dla pozycji operator może wykonać:
-- `picked`
-- `missing`
+## Relacja z packing
 
-## 5. Braki i refill
-Jeśli dla zamówienia wystąpi brak:
-- zamówienie wypada z batcha,
-- jego status w batchu przechodzi na `dropped`,
-- backend dobiera następne zamówienie z tego samego `menu_group`,
-- agregaty produktów są odświeżane.
+Typowy flow:
+1. operator kończy kompletację
+2. batch jest zamykany
+3. GUI przechodzi do packingu
+4. packing pracuje dalej order-level
 
-## 6. Przejście do pakowania
-Po zebraniu pozycji system przechodzi do pakowania.
+---
 
-Aplikacja widzi:
-- dane zamówienia
-- pozycje
-- zdjęcia
-- opisy
-- ilości oczekiwane
-- ilości spakowane
+## Eventy
 
-## 7. Zakończenie pakowania
-Po kliknięciu „koniec”:
-- jeśli przesyłka wymaga gabarytu, aplikacja musi go podać,
-- backend używa resolvera wysyłki,
-- backend wybiera adapter generowania etykiety,
-- backend zapisuje tracking, shipment id, label metadata,
-- backend przygotowuje wydruk.
+System loguje między innymi:
+- `batch_opened`
+- `batch_refilled`
+- `selection_mode_changed`
+- `item_picked`
+- `item_missing`
+- `order_dropped`
+- `batch_closed`
+- `batch_abandoned`
 
-## 8. Wydruk
-Docelowo backend ma sterować wydrukiem przez stanowisko:
-- drukarka przypisana do stanowiska,
-- etykieta PDF/ZPL,
-- reprint możliwy z API.
-
-## 9. Zdarzenia i audyt
-Każdy istotny krok ma być logowany:
-- auth
-- wybór stanowiska
-- open batch
-- refill
-- missing
-- finish packing
-- generate label
-- reprint
-- błędy workflow
-
-========================================
-FILE: docs/system/README.md
-========================================
-# System pakowania LED-ONE - dokumentacja główna
-
-Ta dokumentacja ma służyć tak, żeby nowy programista po wejściu do projektu:
-- nie zgadywał jak działa system,
-- nie zgadywał jak wygląda API,
-- nie zgadywał jak wygląda baza,
-- nie zgadywał które elementy są już zaimplementowane,
-- nie zgadywał które elementy są dopiero planowane.
-
-## Zasada dokumentacji
-Każda rzecz musi mieć jeden z trzech statusów:
-- `POTWIERDZONE` - wynika z aktualnego kodu, bazy albo ustaleń biznesowych,
-- `PLANOWANE` - ustalony kontrakt docelowy do wdrożenia,
-- `DECYZJA_WYMAGANA` - temat nierozstrzygnięty i nie wolno go implementować „na czuja”.
-
-## Część ręczna
-- `01_system_context.md`
-- `02_workflow_target.md`
-- `03_api_contract.md`
-- `04_database_contract.md`
-- `05_shipping_and_labels.md`
-- `06_implementation_rules.md`
-
-## Część generowana z projektu i bazy
-- `generated/01_inventory.md`
-- `generated/02_routes.md`
-- `generated/03_db_schema.md`
-- `generated/04_carrier_groups.md`
-- `generated/05_shipping_map.md`
-- `generated/06_stations.md`
-- `generated/07_migrations.md`
-
-## Najważniejsze zasady biznesowe
-1. System ma być API-first.
-2. Klientem docelowym jest aplikacja tabletowa Kotlin.
-3. Import zamówień ma dalej działać i nie wolno go zepsuć.
-4. Stary system przeglądarkowy został odłożony do `starysystem/`.
-5. Logika wyboru kuriera ma być rozbita na:
-   - `menu_group` - grupa kafelka dla operatora,
-   - `shipment_type` - docelowy typ wysyłki,
-   - `label_provider` - przez jakie API generujemy etykietę,
-   - `label_endpoint` - jaki adapter backendowy ma wykonać wysyłkę.
+MD

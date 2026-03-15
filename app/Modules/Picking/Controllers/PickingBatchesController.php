@@ -68,6 +68,20 @@ final class PickingBatchesController
         }
     }
 
+    public function selectionMode(array $params = []): void
+    {
+        global $currentSession;
+        try {
+            $batchId = (int)($params['batchId'] ?? 0);
+            $body    = Request::jsonBody();
+            $service = $this->boot();
+            $result  = $service->updateSelectionMode($batchId, $body, $currentSession);
+            ApiResponse::ok(['picking' => $result]);
+        } catch (Throwable $e) {
+            ApiResponse::error($e->getMessage(), 400);
+        }
+    }
+
     public function close(array $params = []): void
     {
         global $currentSession;
