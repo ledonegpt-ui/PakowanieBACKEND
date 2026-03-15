@@ -1,13 +1,13 @@
-cat > docs/picking_api.md <<'MD'
 # Picking API
 
 ## Status
-AKTUALNE — zgodne z bieżącym działaniem systemu:
-- agregacja po `subiekt_tow_id`
-- rozszerzony model produktu (`subiekt_symbol`, `subiekt_desc`, `source_name`, `product_name`)
-- tryby doboru batcha
-- przełączanie trybu w locie
-- flow picking -> packing
+
+Dokument opisuje aktualne endpointy pickingu w:
+- `/api/v1`
+
+oraz realne zachowanie serwisu po ostatnich zmianach.
+
+---
 
 ## Base path
 
@@ -17,7 +17,9 @@ AKTUALNE — zgodne z bieżącym działaniem systemu:
 
 ## Autoryzacja
 
-Wszystkie endpointy pickingu wymagają:
+Wszystkie endpointy pickingu poza `health` wymagają autoryzacji nowego API.
+
+Typowy nagłówek:
 
 ```http
 Authorization: Bearer {token}
@@ -29,25 +31,20 @@ Authorization: Bearer {token}
 
 Picking działa na dwóch poziomach:
 
-### 1. `orders`
-To jest warstwa operacyjna:
-- order-level
-- item-level
-- służy do akcji:
-    - `picked`
-    - `missing`
-    - `drop`
+## 1. `orders`
+Warstwa operacyjna do akcji:
+- `picked`
+- `missing`
+- `drop`
 
-### 2. `products`
-To jest warstwa do renderowania listy zbiorczej:
-- agregacja po produkcie magazynowym
-- source of truth produktu = `subiekt_tow_id`
-- agregacja po:
-    - `subiekt_tow_id`
-    - `uom`
+## 2. `products`
+Warstwa zbiorcza do GUI:
+- agregacja po produkcie
+- lista główna powinna być renderowana właśnie stąd
 
-GUI głównego pickingu powinno renderować listę właśnie z `products`.
-GUI nie powinno liczyć własnej agregacji po orderach.
+Rekomendacja:
+- GUI nie powinno liczyć własnych agregatów z `orders`
+- GUI powinno renderować listę główną z `products`
 
 ---
 
@@ -77,41 +74,47 @@ GUI nie powinno liczyć własnej agregacji po orderach.
 
 ## Tryby doboru batcha
 
-Dozwolone `selection_mode`:
+Dozwolone:
 - `cutoff`
 - `cutoff_cluster`
 - `emergency_single`
 
-Domyślny tryb:
-- `cutoff_cluster`
+### Default przy braku pola
+Jeżeli `selection_mode` nie jest wysłane:
+- używany jest `cutoff_cluster`
+
+### Fallback przy błędnej wartości
+Jeżeli klient wyśle nieobsługiwany `selection_mode`:
+- serwis zrobi fallback do `cutoff`
 
 ### `cutoff`
 FIFO:
-- system bierze najstarsze dostępne zamówienia
-- sortowanie bazowe po `imported_at ASC, order_code ASC`
+- źródło: `pak_orders.status = 10`
+- sortowanie:
+  - `imported_at ASC`
+  - `order_code ASC`
 
 ### `cutoff_cluster`
 Tryb domyślny:
-- pierwszy order jest wybierany jak w cutoff
-- kolejne ordery są dobierane preferencyjnie po wspólnych produktach
-- dopasowanie działa po `subiekt_tow_id + uom`
-- jeśli nie uda się dobrać wystarczająco podobnych orderów, system dopełnia batch zwykłym cutoffem
+- pierwszy order pochodzi z FIFO
+- kolejne ordery są dobierane po podobieństwie produktów
+- matching działa po:
+  - `subiekt_tow_id + uom`
+- jeśli podobnych orderów jest za mało, batch jest dopełniany zwykłym cutoffem
 
 ### `emergency_single`
 Tryb awaryjny:
-- batch bierze jedno zamówienie
-- wybór działa po:
-    - `courier_priority DESC`
-    - następnie `imported_at ASC`
-    - następnie `order_code ASC`
+- bierze dokładnie jedno zamówienie
+- sortowanie:
+  - `courier_priority DESC`
+  - `imported_at ASC`
+  - `order_code ASC`
 
 ---
 
-## Endpointy
-
 ## `POST /api/v1/picking/batches/open`
 
-Otwiera nowy batch dla operatora.
+Otwiera nowy batch operatora.
 
 ### Request
 
@@ -123,51 +126,24 @@ Otwiera nowy batch dla operatora.
 }
 ```
 
-### Pola requestu
+### Zasady
+- `carrier_key` jest wymagane
+- `selection_mode` jest opcjonalne
+- `target_orders_count` jest opcjonalne
+- dla `emergency_single` target jest wymuszany do `1`
+- jeśli target jest poza zakresem `1..50`, serwis ustawia `10`
+- operator może mieć tylko jeden otwarty batch naraz
+- jeżeli batch już istnieje, endpoint zwraca istniejący
 
-- `carrier_key` — wymagane
-- `target_orders_count` — opcjonalne
-- `selection_mode` — opcjonalne
-
-### Domyślne zachowanie
-
-Jeżeli `selection_mode` nie jest podane:
-- używany jest `cutoff_cluster`
-
-Jeżeli `selection_mode = emergency_single`:
-- system wymusza `target_orders_count = 1`
+### Dobór orderów
+Serwis wyklucza:
+- ordery aktywne w innych otwartych batchach
 
 ### Response
-
-```json
-{
-  "ok": true,
-  "data": {
-    "picking": {
-      "batch": {
-        "id": 3,
-        "batch_code": "BATCH-1773528111-1",
-        "carrier_key": "inpost",
-        "user_id": 1,
-        "station_id": 11,
-        "status": "open",
-        "workflow_mode": "integrated",
-        "selection_mode": "cutoff_cluster",
-        "target_orders_count": 3,
-        "started_at": "2026-03-14 23:41:51",
-        "completed_at": null,
-        "abandoned_at": null,
-        "active_orders_count": 3,
-        "picked_orders_count": 0,
-        "dropped_orders_count": 0,
-        "total_orders_count": 3
-      },
-      "orders": [],
-      "products": []
-    }
-  }
-}
-```
+Response zwraca pełny model:
+- `batch`
+- `orders`
+- `products`
 
 ---
 
@@ -176,8 +152,8 @@ Jeżeli `selection_mode = emergency_single`:
 Zwraca aktualny otwarty batch operatora.
 
 ### Response
-- jeśli operator ma otwarty batch: zwracany jest pełny payload pickingu
-- jeśli operator nie ma otwartego batcha: `picking = null`
+- jeśli batch istnieje: pełny payload pickingu
+- jeśli batch nie istnieje: `null`
 
 ---
 
@@ -192,14 +168,16 @@ Zwraca pełny szczegół batcha:
 
 ## `POST /api/v1/picking/batches/{batchId}/refill`
 
-Dobiera kolejne zamówienia do batcha.
+Dobiera kolejne ordery do batcha.
 
 ### Logika
 Refill:
-- bierze aktualny `selection_mode` zapisany w batchu
-- wyklucza zamówienia aktywne w innych open batchach
-- wyklucza zamówienia już użyte wcześniej w tym samym batchu
-- dobiera brakującą liczbę orderów do `target_orders_count`
+- działa tylko dla batcha `open`
+- bierze `target_orders_count`
+- liczy aktywne ordery
+- dobiera brakujące rekordy według aktualnego `selection_mode`
+- wyklucza ordery już użyte wcześniej w tym samym batchu
+- wyklucza ordery aktywne w innych otwartych batchach
 
 ### Response
 
@@ -219,7 +197,7 @@ Refill:
 
 ## `POST /api/v1/picking/batches/{batchId}/selection-mode`
 
-Zmienia tryb doboru batcha w locie.
+Zmienia tryb doboru batcha.
 
 ### Request
 
@@ -228,6 +206,14 @@ Zmienia tryb doboru batcha w locie.
   "selection_mode": "emergency_single"
 }
 ```
+
+### Zasady
+- endpoint przyjmuje tylko:
+  - `cutoff`
+  - `cutoff_cluster`
+  - `emergency_single`
+- nie przebudowuje aktualnie przypisanych orderów
+- wpływa dopiero na kolejne refill
 
 ### Response
 
@@ -244,12 +230,6 @@ Zmienia tryb doboru batcha w locie.
 }
 ```
 
-### Ważne
-Zmiana:
-- zapisuje nowy tryb do batcha
-- nie przebudowuje aktualnie przypisanych orderów
-- wpływa na kolejne refill
-
 ---
 
 ## `POST /api/v1/picking/batches/{batchId}/close`
@@ -257,8 +237,8 @@ Zmiana:
 Zamyka batch.
 
 ### Warunek
-Batch może zostać zamknięty tylko wtedy, gdy:
-- nie ma już orderów w statusie `assigned`
+Batch można zamknąć tylko wtedy, gdy:
+- nie ma już orderów `assigned`
 
 ### Response
 
@@ -298,60 +278,33 @@ Porzuca batch.
 
 ## `GET /api/v1/picking/batches/{batchId}/orders`
 
-Zwraca order-level dane robocze do operacji.
+Zwraca operacyjny order-level payload pickingu.
 
-### Response — przykład
+### Zawartość
+Każdy order zawiera:
+- dane orderu
+- listę itemów z `picking_order_items`
 
-```json
-{
-  "ok": true,
-  "data": {
-    "orders": [
-      {
-        "id": 9,
-        "order_code": "1894352",
-        "status": "assigned",
-        "drop_reason": null,
-        "assigned_at": "2026-03-14 23:41:51",
-        "removed_at": null,
-        "delivery_method": "Allegro Paczkomaty InPost (Smart)",
-        "carrier_code": null,
-        "courier_code": null,
-        "items": [
-          {
-            "id": 31,
-            "pak_order_item_id": 1,
-            "subiekt_tow_id": 3698,
-            "subiekt_symbol": "B1643",
-            "subiekt_desc": "czarno-złoty PAJĄK zwis POTRÓJNY na żarówke 3 x e27 czarno-złoty",
-            "source_name": "ADAPTER WTYCZKA UNIWERSALNA BIAŁA",
-            "product_code": "3698",
-            "product_name": "ADAPTER WTYCZKA UNIWERSALNA BIAŁA",
-            "uom": null,
-            "is_unmapped": false,
-            "expected_qty": 1,
-            "picked_qty": 0,
-            "status": "pending",
-            "missing_reason": null
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+### Ważne
+Lista `orders`:
+- pokazuje tylko ordery aktywne
+- **nie pokazuje orderów `dropped`**
 
-### Znaczenie pól itemu
-
-- `subiekt_tow_id` — główny identyfikator produktu
-- `subiekt_symbol` — symbol z Subiekta
-- `subiekt_desc` — opis z Subiekta
-- `source_name` — nazwa źródłowa z `pak_order_items.name`
-- `product_code` — alias kompatybilności, zwykle `string(subiekt_tow_id)`
-- `product_name` — finalna nazwa do GUI
-- `expected_qty` — ilość oczekiwana
-- `picked_qty` — ilość zebrana
-- `status` — `pending|picked|missing`
+### Pola itemu
+- `id`
+- `pak_order_item_id`
+- `subiekt_tow_id`
+- `subiekt_symbol`
+- `subiekt_desc`
+- `source_name`
+- `product_code`
+- `product_name`
+- `uom`
+- `is_unmapped`
+- `expected_qty`
+- `picked_qty`
+- `status`
+- `missing_reason`
 
 ---
 
@@ -359,71 +312,35 @@ Zwraca order-level dane robocze do operacji.
 
 Zwraca zagregowaną listę produktów dla batcha.
 
-### Główna zasada
-Agregacja działa po:
+### Klucz agregacji
+Docelowo:
 - `subiekt_tow_id`
 - `uom`
 
-### Response — przykład
+### Ważne doprecyzowanie
+Aktualne zapytania źródłowe pobierają:
+- `NULL AS uom`
 
-```json
-{
-  "ok": true,
-  "data": {
-    "products": [
-      {
-        "id": 86,
-        "subiekt_tow_id": "4045",
-        "subiekt_symbol": "B0192",
-        "subiekt_desc": "8W ! VINTAGE GRUSZKA 8W ciepła filament ; AI 199166 ; LL 3376",
-        "source_name": "ŻARÓWKA VINTAGE 8W CIEPŁA",
-        "product_code": "4045",
-        "product_name": "ŻARÓWKA VINTAGE 8W CIEPŁA",
-        "uom": null,
-        "is_unmapped": false,
-        "total_expected_qty": 3,
-        "total_picked_qty": 0,
-        "total_missing_qty": 0,
-        "remaining_qty": 3,
-        "status": "pending",
-        "qty_breakdown": [3],
-        "qty_breakdown_label": "3",
-        "order_breakdown": [
-          {
-            "order_code": "1894352",
-            "qty": 3,
-            "item_ids": [32],
-            "item_count": 1,
-            "status_summary": "pending"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+więc dziś agregacja działa w praktyce głównie po:
+- `subiekt_tow_id`
 
-### Znaczenie pól produktu
-
-- `subiekt_tow_id` — source of truth produktu
-- `subiekt_symbol` — symbol z Subiekta
-- `subiekt_desc` — opis z Subiekta
-- `source_name` — nazwa źródłowa
-- `product_code` — alias kompatybilności
-- `product_name` — finalna nazwa do GUI
-- `total_expected_qty` — suma oczekiwana
-- `total_picked_qty` — suma zebrana
-- `total_missing_qty` — suma braków
-- `remaining_qty` — ile realnie zostało do zebrania
-- `qty_breakdown` — tablica źródłowych ilości, np. `[1,2,6]`
-- `qty_breakdown_label` — string do prostego renderu, np. `1+2+6`
-- `order_breakdown` — rozbicie per order
-
-### Status agregatu
-
-- `pending` — wszystkie itemy pending
-- `picked` — wszystkie itemy picked i brak missing
-- `partial` — dowolny miks picked/pending/missing lub wszystko missing
+### Zwracane pola
+- `subiekt_tow_id`
+- `subiekt_symbol`
+- `subiekt_desc`
+- `source_name`
+- `product_code`
+- `product_name`
+- `uom`
+- `is_unmapped`
+- `total_expected_qty`
+- `total_picked_qty`
+- `total_missing_qty`
+- `remaining_qty`
+- `status`
+- `qty_breakdown`
+- `qty_breakdown_label`
+- `order_breakdown`
 
 ---
 
@@ -433,6 +350,12 @@ Oznacza konkretny item jako zebrany.
 
 ### Request
 Brak body.
+
+### Logika
+- ustawia `picked_qty = expected_qty`
+- ustawia status itemu na `picked`
+- przebudowuje agregaty
+- gdy order nie ma już itemów `pending`, order przechodzi do `picked`
 
 ### Response
 
@@ -452,12 +375,6 @@ Brak body.
 }
 ```
 
-### Logika
-- działa item-level
-- aktualizuje `picked_qty`
-- przebudowuje agregaty
-- gdy order nie ma już itemów `pending`, może przejść do `picked`
-
 ---
 
 ## `POST /api/v1/picking/orders/{orderId}/items/{itemId}/missing`
@@ -471,6 +388,13 @@ Oznacza pozycję jako brakującą.
   "reason": "brak na półce"
 }
 ```
+
+### Logika
+- wymaga niepustego `reason`
+- ustawia status itemu na `missing`
+- zapisuje `missing_reason`
+- przebudowuje agregaty
+- nie dropuje automatycznie orderu
 
 ### Response
 
@@ -489,12 +413,6 @@ Oznacza pozycję jako brakującą.
 }
 ```
 
-### Logika
-- działa item-level
-- zostawia świadomy brak
-- nie usuwa całego ordera z batcha
-- przebudowuje agregaty
-
 ---
 
 ## `POST /api/v1/picking/orders/{orderId}/drop`
@@ -508,6 +426,13 @@ Usuwa całe zamówienie z batcha.
   "reason": "missing_items"
 }
 ```
+
+### Logika
+- działa na poziomie orderu
+- wymaga niepustego `reason`
+- ustawia order jako `dropped`
+- przebudowuje agregaty
+- uruchamia refill od razu w serwisie
 
 ### Response
 
@@ -525,50 +450,11 @@ Usuwa całe zamówienie z batcha.
 }
 ```
 
-### Logika
-- działa order-level
-- usuwa całe zamówienie z bieżącego batcha
-- przebudowuje agregaty
-- uruchamia refill
-
-### Ważne
-Kliknięcie `X` w GUI odpowiada właśnie tej operacji.
-
----
-
-## Relacja z GUI
-
-### GUI pickingu
-Powinno:
-- renderować główną listę z `products`
-- pokazywać:
-    - `product_name`
-    - `subiekt_symbol`
-    - `subiekt_desc`
-    - sumę do zebrania
-    - breakdown `qty_breakdown_label`
-- używać `orders.items` do akcji item-level
-
-### GUI nie powinno
-- liczyć własnej agregacji po orderach
-- agregować po `offer_id`
-- traktować `offer_id` jako identyfikatora magazynowego
-
----
-
-## Relacja z packing
-
-Typowy flow:
-1. operator kończy kompletację
-2. batch jest zamykany
-3. GUI przechodzi do packingu
-4. packing pracuje dalej order-level
-
 ---
 
 ## Eventy
 
-System loguje między innymi:
+Najważniejsze eventy pickingu:
 - `batch_opened`
 - `batch_refilled`
 - `selection_mode_changed`
@@ -578,4 +464,13 @@ System loguje między innymi:
 - `batch_closed`
 - `batch_abandoned`
 
-MD
+---
+
+## Najważniejsze uwagi wdrożeniowe
+
+- default `selection_mode` to `cutoff_cluster`
+- błędny `selection_mode` robi fallback do `cutoff`
+- `missing` nie dropuje orderu
+- `drop` robi refill od razu
+- `products` to główne źródło listy dla GUI
+- `uom` jest częścią modelu, ale w aktualnym źródle nie jest jeszcze realnie zasilane
