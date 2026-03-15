@@ -1,21 +1,22 @@
 # Picking
 
 ## Status
-POTWIERDZONE — zweryfikowane w kodzie, migracjach i bazie
+AKTUALNE — zgodne z bieżącym działaniem systemu po wdrożeniu:
+- agregacji po `subiekt_tow_id`
+- rozszerzonego modelu produktu
+- trybów doboru batcha
+- przełączenia picking -> packing
 
 ## Architektura modułu
-Picking jest zorganizowany w układzie:
 
+Picking jest zorganizowany w układzie:
 - `PickingBatchesController`
 - `PickingOrdersController`
 - `PickingBatchService`
 - `PickingBatchRepository`
 
 Flow requestu:
-
-API → Controller → Service → Repository → MySQL
-
----
+API -> Controller -> Service -> Repository -> MySQL
 
 ## Endpointy
 
@@ -24,6 +25,7 @@ API → Controller → Service → Repository → MySQL
 - `GET /api/v1/picking/batches/current`
 - `GET /api/v1/picking/batches/{batchId}`
 - `POST /api/v1/picking/batches/{batchId}/refill`
+- `POST /api/v1/picking/batches/{batchId}/selection-mode`
 - `POST /api/v1/picking/batches/{batchId}/close`
 - `POST /api/v1/picking/batches/{batchId}/abandon`
 
@@ -36,9 +38,8 @@ API → Controller → Service → Repository → MySQL
 - `POST /api/v1/picking/orders/{orderId}/items/{itemId}/missing`
 - `POST /api/v1/picking/orders/{orderId}/drop`
 
----
-
 ## Tabele używane przez picking
+
 - `picking_batches`
 - `picking_batch_orders`
 - `picking_order_items`
@@ -46,8 +47,6 @@ API → Controller → Service → Repository → MySQL
 - `picking_events`
 - `pak_orders`
 - `pak_order_items`
-
----
 
 ## Statusy
 
@@ -71,55 +70,166 @@ API → Controller → Service → Repository → MySQL
 - `partial`
 - `picked`
 
----
+## Główna zasada modelu produktowego
+
+W pickingu source of truth produktu to:
+- `subiekt_tow_id`
+
+Dla kompatybilności:
+- `product_code` zostaje w API i snapshotach,
+- ale jego wartość ma odpowiadać `string(subiekt_tow_id)` dla pozycji zmapowanych,
+- dla fallbacków legacy może mieć techniczny klucz typu `legacy:{pak_order_item_id}`.
+
+Agregacja produktów w batchu działa po:
+- `subiekt_tow_id`
+- oraz `uom`
+
+## Snapshot item-level
+
+Po otwarciu batcha i przy refill pozycje są kopiowane z `pak_order_items` do `picking_order_items`.
+
+Snapshot przechowuje między innymi:
+- `pak_order_item_id`
+- `subiekt_tow_id`
+- `subiekt_symbol`
+- `subiekt_desc`
+- `source_name`
+- `product_code`
+- `product_name`
+- `uom`
+- `is_unmapped`
+- `expected_qty`
+- `picked_qty`
+- `status`
+- `missing_reason`
 
 ## Jak działa open batch
 
 1. Operator wybiera `carrier_key`
-2. System znajduje zamówienia z `pak_orders.status = 10`
-3. System filtruje je przez resolver wysyłki
-4. System wyklucza zamówienia aktywne w innych otwartych batchach
-5. Tworzy rekord w `picking_batches`
-6. Dodaje zamówienia do `picking_batch_orders`
-7. Kopiuje pozycje do `picking_order_items`
-8. Buduje agregaty w `picking_batch_items`
-9. Zapisuje event `batch_opened`
+2. Opcjonalnie przekazuje `target_orders_count`
+3. Opcjonalnie przekazuje `selection_mode`
+4. System sprawdza czy operator nie ma już otwartego batcha
+5. System wyklucza zamówienia aktywne w innych otwartych batchach
+6. System dobiera zamówienia zgodnie z `selection_mode`
+7. Tworzy rekord w `picking_batches`
+8. Dodaje zamówienia do `picking_batch_orders`
+9. Kopiuje pozycje do `picking_order_items`
+10. Buduje agregaty w `picking_batch_items`
+11. Zapisuje event `batch_opened`
 
----
+## Domyślny tryb doboru
+
+Domyślny `selection_mode`:
+- `cutoff_cluster`
+
+## Tryby doboru batcha
+
+### `cutoff`
+Klasyczny FIFO:
+- system bierze najstarsze dostępne zamówienia pasujące do `carrier_key`
+
+### `cutoff_cluster`
+Tryb domyślny:
+- pierwszy order nadal pochodzi z cutoff/FIFO
+- kolejne ordery są dobierane z preferencją wspólnych produktów
+- dopasowanie działa po `subiekt_tow_id + uom`
+- jeżeli nie da się dobrać wystarczająco podobnych orderów, batch jest dopełniany zwykłym cutoffem
+
+### `emergency_single`
+Tryb awaryjny:
+- batch bierze tylko jedno zamówienie
+- kolejność jest oparta o priorytet kuriera, a potem FIFO
 
 ## Refill
 
 Refill działa na podstawie:
-
 - `target_orders_count`
 - liczby aktywnych zamówień w batchu
+- bieżącego `selection_mode` zapisanego w batchu
 
 Aktywne zamówienia to wszystkie poza `dropped`.
 
-System:
-- liczy ile zamówień brakuje do targetu,
-- wyklucza zamówienia już użyte w danym batchu,
-- wyklucza zamówienia aktywne w innych batchach,
-- dobiera nowe rekordy,
-- zapisuje je do `picking_batch_orders`,
-- kopiuje ich pozycje do `picking_order_items`.
+Refill:
+- liczy ile zamówień brakuje do targetu
+- wyklucza zamówienia już użyte w tym samym batchu
+- wyklucza zamówienia aktywne w innych batchach
+- dobiera nowe rekordy zgodnie z `selection_mode`
+- zapisuje je do `picking_batch_orders`
+- kopiuje ich pozycje do `picking_order_items`
+- przebudowuje `picking_batch_items`
 
----
+## Zmiana trybu w locie
+
+Dostępny jest endpoint:
+- `POST /api/v1/picking/batches/{batchId}/selection-mode`
+
+Zmiana:
+- zapisuje nowy `selection_mode` do batcha,
+- nie przebudowuje aktualnego składu batcha,
+- wpływa na kolejne refill.
 
 ## Agregaty produktów
 
 `GET /picking/batches/{batchId}/products` zwraca dane z `picking_batch_items`.
 
-Jest to widok zagregowany dla całego batcha:
+To jest widok zagregowany dla całego batcha:
+- `subiekt_tow_id`
+- `subiekt_symbol`
+- `subiekt_desc`
+- `source_name`
 - `product_code`
 - `product_name`
+- `uom`
+- `is_unmapped`
 - `total_expected_qty`
 - `total_picked_qty`
+- `total_missing_qty`
+- `remaining_qty`
 - `status`
+- `qty_breakdown`
+- `qty_breakdown_label`
+- `order_breakdown`
 
 To nie są osobne pozycje zamówienia, tylko suma pozycji z wszystkich aktywnych zamówień w batchu.
 
----
+## Semantyka akcji operatora
+
+### `picked`
+- działa item-level
+- ustawia pozycję jako zebraną
+- przebudowuje agregaty
+- jeżeli wszystkie pozycje ordera są rozliczone, order może przejść do `picked`
+
+### `missing`
+- działa item-level
+- zostawia pozycję świadomie oznaczoną jako brak
+- nie dropuje automatycznie zamówienia
+- przebudowuje agregaty
+
+### `drop`
+- działa order-level
+- usuwa całe zamówienie z batcha
+- przebudowuje agregaty
+- uruchamia refill
+
+## Semantyka `X`
+
+Kliknięcie `X`:
+- dropuje całe zamówienie z bieżącego batcha
+- powoduje refill bieżącego batcha
+- nie powinno zwracać tego ordera do tego samego batcha przy refill
+- może uwolnić order dla innych batchy
+
+## Zamknięcie batcha
+
+Batch można zamknąć tylko wtedy, gdy:
+- nie ma już orderów w statusie `assigned`
+
+Typowy flow operatora:
+1. wszystkie pozycje rozliczone jako `picked` lub `missing`
+2. batch nie ma już assigned orderów
+3. operator zamyka batch
+4. GUI może przejść do packingu
 
 ## Event log
 
@@ -129,16 +239,17 @@ Tabela:
 Typy eventów:
 - `batch_opened`
 - `batch_refilled`
+- `selection_mode_changed`
 - `item_picked`
 - `item_missing`
 - `order_dropped`
 - `batch_closed`
 - `batch_abandoned`
 
----
-
 ## Ważne doprecyzowanie
 
-Tabela `picking_batch_orders` jest aktywnie używana przez system.  
-Wcześniejsze opisy sugerujące, że jest pusta albo nieużywana, są nieaktualne.
+`picking_batch_orders` jest aktywnie używana przez system.
+To nie jest tabela pomocnicza ani martwy artefakt.
 
+`orders` w API służy do operacji item-level.
+`products` w API służy do renderowania głównej listy zbiorczej.

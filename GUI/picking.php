@@ -120,6 +120,20 @@ if (isset($batchData['batch']['selection_mode']) && trim((string)$batchData['bat
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $action = trim($_POST['action']);
 
+    if ($action === 'close_and_packing') {
+        $actionRes = apicall('POST', '/picking/batches/' . $batchId . '/close', array());
+        save_log('close batch=' . $batchId . ' -> packing', $actionRes);
+
+        if (isset($actionRes['ok']) && $actionRes['ok']) {
+            $target = 'packing.php?batch_id=' . urlencode((string)$batchId);
+            if ($carrier !== '') {
+                $target .= '&carrier=' . urlencode($carrier);
+            }
+            header('Location: ' . $target);
+            exit;
+        }
+    }
+
     if ($action === 'change_selection_mode' && isset($_POST['selection_mode'])) {
         $selectionMode = trim((string)$_POST['selection_mode']);
 
@@ -346,6 +360,13 @@ function submitDrop(formId) {
                 </select>
                 <button type="submit" class="btn-top gray" style="border:0;cursor:pointer;">Zmień tryb</button>
             </form>
+
+            <?php if ($pendingRowsCount === 0 && !empty($orders)): ?>
+                <form method="post" action="picking.php<?php echo $carrier !== '' ? '?carrier=' . urlencode($carrier) : ''; ?>" style="margin-top:10px;" onsubmit="return confirm('Zamknąć batch i przejść do packingu?');">
+                    <input type="hidden" name="action" value="close_and_packing">
+                    <button type="submit" class="btn-top" style="border:0;cursor:pointer;background:#198754;">Zakończono → packing</button>
+                </form>
+            <?php endif; ?>
         </div>
 
         <div class="card">

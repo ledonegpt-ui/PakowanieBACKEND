@@ -151,23 +151,37 @@ final class PackingRepository
     public function insertSessionItem(
         int $sessionId,
         int $pakOrderItemId,
+        ?string $offerId,
+        ?int $subiektTowId,
+        ?string $subiektSymbol,
+        ?string $subiektDesc,
+        ?string $sourceName,
         string $productCode,
         string $productName,
+        ?string $uom,
+        bool $isUnmapped,
         float $expectedQty
     ): void {
         $st = $this->db->prepare("
             INSERT INTO packing_session_items
-                (packing_session_id, pak_order_item_id, product_code, product_name,
-                 expected_qty, packed_qty, created_at, updated_at)
+                (packing_session_id, pak_order_item_id, offer_id, subiekt_tow_id, subiekt_symbol, subiekt_desc, source_name,
+                 product_code, product_name, uom, is_unmapped, expected_qty, packed_qty, created_at, updated_at)
             VALUES
-                (:session_id, :pak_order_item_id, :product_code, :product_name,
-                 :expected_qty, 0, NOW(), NOW())
+                (:session_id, :pak_order_item_id, :offer_id, :subiekt_tow_id, :subiekt_symbol, :subiekt_desc, :source_name,
+                 :product_code, :product_name, :uom, :is_unmapped, :expected_qty, 0, NOW(), NOW())
         ");
         $st->execute([
             ':session_id'        => $sessionId,
             ':pak_order_item_id' => $pakOrderItemId,
+            ':offer_id'          => $offerId,
+            ':subiekt_tow_id'    => $subiektTowId,
+            ':subiekt_symbol'    => $subiektSymbol,
+            ':subiekt_desc'      => $subiektDesc,
+            ':source_name'       => $sourceName,
             ':product_code'      => $productCode,
             ':product_name'      => $productName,
+            ':uom'               => $uom,
+            ':is_unmapped'       => $isUnmapped ? 1 : 0,
             ':expected_qty'      => $expectedQty,
         ]);
     }
@@ -175,11 +189,11 @@ final class PackingRepository
     public function getSessionItems(int $sessionId): array
     {
         $st = $this->db->prepare("
-            SELECT id, pak_order_item_id, product_code, product_name,
-                   expected_qty, packed_qty
+            SELECT id, pak_order_item_id, offer_id, subiekt_tow_id, subiekt_symbol, subiekt_desc, source_name,
+                   product_code, product_name, uom, is_unmapped, expected_qty, packed_qty
             FROM packing_session_items
             WHERE packing_session_id = :session_id
-            ORDER BY product_name ASC
+            ORDER BY COALESCE(offer_id, ''), product_name ASC, id ASC
         ");
         $st->execute([':session_id' => $sessionId]);
         return $st->fetchAll(PDO::FETCH_ASSOC);
@@ -219,8 +233,8 @@ final class PackingRepository
     public function findOrderItems(string $orderCode): array
     {
         $st = $this->db->prepare("
-            SELECT item_id, order_code, sku, name, subiekt_desc,
-                   quantity, image_url
+            SELECT item_id, order_code, offer_id, subiekt_tow_id, subiekt_symbol, sku, name, subiekt_desc,
+                   quantity, image_url, NULL AS uom
             FROM pak_order_items
             WHERE order_code = :order_code
         ");

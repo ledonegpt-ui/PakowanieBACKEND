@@ -66,11 +66,49 @@ final class PackingService
             // skopiuj pozycje zamówienia
             $items = $this->repo->findOrderItems($orderCode);
             foreach ($items as $item) {
+                $offerId = isset($item['offer_id']) ? trim((string)$item['offer_id']) : '';
+                $offerId = $offerId !== '' ? $offerId : null;
+
+                $subiektTowId = isset($item['subiekt_tow_id']) ? (int)$item['subiekt_tow_id'] : 0;
+                $subiektTowId = $subiektTowId > 0 ? $subiektTowId : null;
+
+                $subiektSymbol = isset($item['subiekt_symbol']) ? trim((string)$item['subiekt_symbol']) : '';
+                $subiektSymbol = $subiektSymbol !== '' ? $subiektSymbol : null;
+
+                $subiektDesc = isset($item['subiekt_desc']) ? trim((string)$item['subiekt_desc']) : '';
+                $subiektDesc = $subiektDesc !== '' ? $subiektDesc : null;
+
+                $sourceName = isset($item['name']) ? trim((string)$item['name']) : '';
+                $sourceName = $sourceName !== '' ? $sourceName : null;
+
+                $uom = isset($item['uom']) ? trim((string)$item['uom']) : '';
+                $uom = $uom !== '' ? $uom : null;
+
+                $isUnmapped = $subiektTowId === null;
+                $productCode = $isUnmapped
+                    ? 'legacy:' . (int)$item['item_id']
+                    : (string)$subiektTowId;
+
+                $productName = $sourceName !== null ? $sourceName : '';
+                if ($productName === '') {
+                    $productName = $subiektDesc !== null ? $subiektDesc : '';
+                }
+                if ($productName === '') {
+                    $productName = $productCode;
+                }
+
                 $this->repo->insertSessionItem(
                     $sessionId,
                     (int)$item['item_id'],
-                    (string)($item['sku'] ?? ''),
-                    (string)($item['name'] ?? ''),
+                    $offerId,
+                    $subiektTowId,
+                    $subiektSymbol,
+                    $subiektDesc,
+                    $sourceName,
+                    $productCode,
+                    $productName,
+                    $uom,
+                    $isUnmapped,
                     (float)($item['quantity'] ?? 1)
                 );
             }
