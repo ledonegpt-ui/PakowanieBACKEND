@@ -1,57 +1,33 @@
 # Picking
 
 ## Status
+AKTUALNE — zgodne z bieżącym stanem systemu po wdrożeniu:
+- agregacji po `subiekt_tow_id`
+- rozszerzonego modelu produktu
+- trybów doboru batcha
+- przełączania `selection_mode` w locie
+- przekazania batcha do packingu po zamknięciu
 
-Dokument opisuje **obecne zachowanie kodu**, a nie stan docelowy.
+## Architektura modułu
 
-Picking w repo jest wdrożony i obsługuje:
-
-- otwieranie batcha
-- dobór zamówień wg `carrier_key`
-- trzy tryby `selection_mode`
-- item-level `picked`
-- item-level `missing`
-- order-level `drop`
-- refill
-- close
-- abandon
-- log zdarzeń
-- widok zagregowanych produktów
-
----
-
-## Architektura
-
-Picking jest zorganizowany w warstwach:
-
+Picking jest zorganizowany w układzie:
 - `PickingBatchesController`
 - `PickingOrdersController`
 - `PickingBatchService`
 - `PickingBatchRepository`
 
-Przepływ:
-- API
-- Controller
-- Service
-- Repository
-- MySQL
-
----
+Flow:
+- API -> Controller -> Service -> Repository -> MySQL
 
 ## Tabele używane przez picking
 
-### Tabele modułu
 - `picking_batches`
 - `picking_batch_orders`
 - `picking_order_items`
 - `picking_batch_items`
 - `picking_events`
-
-### Tabele źródłowe
 - `pak_orders`
 - `pak_order_items`
-
----
 
 ## Statusy
 
@@ -75,39 +51,25 @@ Przepływ:
 - `partial`
 - `picked`
 
----
+## Główna zasada modelu produktowego
 
-## Źródło danych i snapshot
-
-### Nagłówek zamówienia
-Źródłem jest:
-- `pak_orders`
-
-### Pozycje do pickingu
-Źródłem są:
-- `pak_order_items`
-
-Przy otwarciu batcha oraz przy refill pozycje są kopiowane do:
-- `picking_order_items`
-
-To oznacza, że `picking_order_items` jest **snapshotem operacyjnym**, a nie widokiem liczonym live z `pak_order_items`.
-
----
-
-## Model produktu
-
-Dla pozycji poprawnie zmapowanych głównym identyfikatorem produktu jest:
+W pickingu source of truth produktu to:
 - `subiekt_tow_id`
 
-Dla kompatybilności API nadal zwraca również:
-- `product_code`
-- `product_name`
+Dla kompatybilności:
+- `product_code` zostaje w API,
+- ale dla poprawnie zmapowanych pozycji jest to string z `subiekt_tow_id`,
+- dla fallbacków legacy może wystąpić techniczny klucz typu `legacy:{pak_order_item_id}`.
 
-### Reguła identyfikacji
-- dla pozycji zmapowanych `product_code = string(subiekt_tow_id)`
-- dla fallbacków legacy `product_code = legacy:{pak_order_item_id}`
+Agregacja produktów w batchu działa po:
+- `subiekt_tow_id`
+- `uom`
 
-### Dane produktu przechowywane w snapshotach
+## Snapshot item-level
+
+Po otwarciu batcha i przy refill pozycje są kopiowane z `pak_order_items` do `picking_order_items`.
+
+Snapshot przechowuje między innymi:
 - `pak_order_item_id`
 - `subiekt_tow_id`
 - `subiekt_symbol`
@@ -122,130 +84,62 @@ Dla kompatybilności API nadal zwraca również:
 - `status`
 - `missing_reason`
 
----
+## Domyślny tryb doboru
 
-## Agregacja produktów
-
-### Docelowa zasada
-Agregacja w `picking_batch_items` działa po:
-- `subiekt_tow_id`
-- `uom`
-
-### Ważne doprecyzowanie
-Bieżące odczyty z `pak_order_items` pobierają:
-- `NULL AS uom`
-
-W praktyce oznacza to, że aktualnie agregacja działa głównie po:
-- `subiekt_tow_id`
-
-`uom` jest już częścią modelu i klucza agregacji, ale dziś źródło jeszcze go realnie nie zasila.
-
-### Fallback dla pozycji niezmapowanych
-Jeżeli pozycja nie ma poprawnego `subiekt_tow_id`, agregacja używa technicznego klucza per pozycja legacy, tak aby różne niezmapowane rekordy nie skleiły się błędnie w jeden produkt.
-
----
-
-## Otwieranie batcha
-
-Endpoint:
-- `POST /api/v1/picking/batches/open`
-
-### Wymagane pole
-- `carrier_key`
-
-### Pola opcjonalne
-- `selection_mode`
-- `target_orders_count`
-
-### Domyślne zachowanie
-Jeżeli `selection_mode` nie jest podane:
-- używany jest `cutoff_cluster`
-
-### Zachowanie przy błędnym `selection_mode`
-Jeżeli klient wyśle nieobsługiwany `selection_mode`:
-- serwis robi fallback do `cutoff`
-
-To jest ważne, bo **default przy braku pola** i **fallback przy błędnej wartości** to nie to samo.
-
-### Zachowanie `target_orders_count`
-- dla `emergency_single` target jest wymuszany do `1`
-- jeżeli target jest `< 1` albo `> 50`, serwis ustawia `10`
-
-### Ograniczenie sesyjne
-- operator może mieć tylko jeden otwarty batch naraz
-- jeśli już ma otwarty batch, `open` zwraca istniejący batch zamiast tworzyć nowy
-
----
+Domyślny `selection_mode`:
+- `cutoff_cluster`
 
 ## Tryby doboru batcha
 
-Dozwolone:
-- `cutoff`
-- `cutoff_cluster`
-- `emergency_single`
-
 ### `cutoff`
-Klasyczny dobór FIFO:
-- zamówienia z `pak_orders.status = 10`
-- sortowanie:
-  - `imported_at ASC`
-  - `order_code ASC`
+Klasyczny FIFO:
+- system bierze najstarsze dostępne zamówienia pasujące do `carrier_key`
 
 ### `cutoff_cluster`
-Tryb domyślny.
-
-Logika:
-1. system wybiera order kotwiczący tak jak w `cutoff`
-2. pobiera szerszą pulę kandydatów
-3. szuka orderów z częścią wspólnych produktów
-4. dopasowanie działa po kluczu:
-   - `subiekt_tow_id + uom`
-5. jeśli podobnych orderów jest za mało, batch jest dopełniany zwykłym cutoffem
+Tryb domyślny:
+- pierwszy order nadal pochodzi z cutoff/FIFO
+- kolejne ordery są dobierane z preferencją wspólnych produktów
+- dopasowanie działa po `subiekt_tow_id + uom`
+- jeżeli nie da się dobrać wystarczająco podobnych orderów, batch jest dopełniany zwykłym cutoffem
 
 ### `emergency_single`
 Tryb awaryjny:
 - batch bierze tylko jedno zamówienie
-- sortowanie:
-  - `courier_priority DESC`
-  - `imported_at ASC`
-  - `order_code ASC`
+- kolejność jest oparta o `courier_priority DESC`, a potem FIFO
 
----
+## Refill
 
-## Wykluczanie orderów przy doborze
+Refill działa na podstawie:
+- `target_orders_count`
+- liczby aktywnych zamówień w batchu
+- bieżącego `selection_mode` zapisanego w batchu
 
-Przy `open` i `refill` system wyklucza:
+Aktywne zamówienia to wszystkie poza `dropped`.
 
-- ordery już aktywne w innych otwartych batchach
-- przy refill dodatkowo wszystkie ordery, które były już kiedyś użyte w tym samym batchu
+Refill:
+- liczy ile zamówień brakuje do targetu
+- wyklucza zamówienia już użyte w tym samym batchu
+- wyklucza zamówienia aktywne w innych batchach
+- dobiera nowe rekordy zgodnie z `selection_mode`
+- zapisuje je do `picking_batch_orders`
+- kopiuje ich pozycje do `picking_order_items`
+- przebudowuje `picking_batch_items`
 
-Dzięki temu refill nie dobiera ponownie orderu, który wcześniej wypadł z batcha.
+## Zmiana trybu w locie
 
----
+Dostępny jest endpoint:
+- `POST /api/v1/picking/batches/{batchId}/selection-mode`
 
-## Warstwa `orders`
+Zmiana:
+- zapisuje nowy `selection_mode` do batcha,
+- nie przebudowuje aktualnego składu batcha,
+- wpływa na kolejne refill.
 
-Endpoint:
-- `GET /api/v1/picking/batches/{batchId}/orders`
+## Agregaty produktów
 
-To jest warstwa operacyjna do działań:
-- item-level
-- order-level
+`GET /picking/batches/{batchId}/products` zwraca dane z `picking_batch_items`.
 
-### Ważne
-Payload `orders` **nie pokazuje orderów `dropped`**.  
-Stats batcha nadal je liczą, ale lista `orders` zwraca tylko aktywne ordery.
-
----
-
-## Warstwa `products`
-
-Endpoint:
-- `GET /api/v1/picking/batches/{batchId}/products`
-
-To jest warstwa do renderowania głównej listy zbiorczej.
-
-Zwraca między innymi:
+To jest widok zagregowany dla całego batcha:
 - `subiekt_tow_id`
 - `subiekt_symbol`
 - `subiekt_desc`
@@ -263,134 +157,56 @@ Zwraca między innymi:
 - `qty_breakdown_label`
 - `order_breakdown`
 
-### Status agregatu
-- `pending` — wszystkie składowe są pending
-- `picked` — wszystkie składowe są picked
-- `partial` — miks pending / picked / missing albo całość missing
+## Semantyka akcji operatora
 
-### Rekomendacja dla GUI
-Główny ekran pickingu powinien renderować listę z:
-- `products`
-
-a nie liczyć własnej agregacji po `orders`.
-
----
-
-## Akcje operatora
-
-## `picked`
-Endpoint:
-- `POST /api/v1/picking/orders/{orderId}/items/{itemId}/picked`
-
-Logika:
+### `picked`
 - działa item-level
-- ustawia `picked_qty = expected_qty`
-- ustawia status itemu na `picked`
+- ustawia pozycję jako zebraną
 - przebudowuje agregaty
-- jeżeli order nie ma już itemów `pending`, order przechodzi do `picked`
+- jeżeli wszystkie pozycje ordera są rozliczone, order może przejść do `picked`
 
-## `missing`
-Endpoint:
-- `POST /api/v1/picking/orders/{orderId}/items/{itemId}/missing`
-
-Logika:
+### `missing`
 - działa item-level
-- wymaga niepustego `reason`
-- ustawia status itemu na `missing`
-- zapisuje `missing_reason`
+- zostawia pozycję świadomie oznaczoną jako brak
+- nie dropuje automatycznie zamówienia
 - przebudowuje agregaty
-- **nie dropuje automatycznie całego orderu**
 
-## `drop`
-Endpoint:
-- `POST /api/v1/picking/orders/{orderId}/drop`
-
-Logika:
+### `drop`
 - działa order-level
-- wymaga niepustego `reason`
-- ustawia order jako `dropped`
+- usuwa całe zamówienie z batcha
 - przebudowuje agregaty
-- **natychmiast uruchamia refill w tej samej transakcji**
+- GUI może po tym wykonać refill
 
-To jest ważna zmiana względem starszych opisów: po manualnym dropie refill nie jest tylko „opcjonalnym ruchem GUI”, ale częścią serwisu.
+## Semantyka przycisków GUI
 
----
+### `X`
+- dropuje całe zamówienie z bieżącego batcha
 
-## Refill
+### `Brak`
+- oznacza konkretną pozycję jako `missing`
+- pozycja zostaje świadomie rozliczona jako brak
 
-Endpoint:
-- `POST /api/v1/picking/batches/{batchId}/refill`
-
-Refill:
-- działa tylko dla batcha `open`
-- liczy liczbę aktywnych orderów
-- porównuje ją z `target_orders_count`
-- dobiera brakujące ordery wg aktualnego `selection_mode`
-- kopiuje ich pozycje do `picking_order_items`
-- przebudowuje `picking_batch_items`
-
-### Co znaczy „aktywny order”
-Aktywne są wszystkie ordery poza:
-- `dropped`
-
-### `selection_mode` przy refill
-Refill używa trybu zapisanego w batchu:
-- po `open`
-- albo po `selection-mode`
-
----
-
-## Zmiana trybu w locie
-
-Endpoint:
-- `POST /api/v1/picking/batches/{batchId}/selection-mode`
-
-Logika:
-- przyjmuje tylko:
-  - `cutoff`
-  - `cutoff_cluster`
-  - `emergency_single`
-- zapisuje nowy `selection_mode`
-- nie przebudowuje już przypisanych orderów
-- wpływa dopiero na kolejne refill
-
----
+### `Zakończono -> packing`
+- GUI zamyka batch
+- następnie przechodzi do packingu
 
 ## Zamknięcie batcha
 
-Endpoint:
-- `POST /api/v1/picking/batches/{batchId}/close`
+Batch można zamknąć tylko wtedy, gdy:
+- nie ma już orderów w statusie `assigned`
 
-Warunek:
-- batch można zamknąć tylko wtedy, gdy nie ma już orderów `assigned`
-
-To oznacza, że:
-- wszystkie aktywne ordery muszą być rozliczone jako `picked`
-- dropped nie blokują zamknięcia
-
-Response status:
-- `completed`
-
----
-
-## Porzucenie batcha
-
-Endpoint:
-- `POST /api/v1/picking/batches/{batchId}/abandon`
-
-Logika:
-- działa tylko dla batcha `open`
-- kończy batch statusem `abandoned`
-- zapisuje event `batch_abandoned`
-
----
+Typowy flow:
+1. wszystkie pozycje rozliczone jako `picked` lub `missing`
+2. batch nie ma już `assigned`
+3. operator zamyka batch
+4. GUI przechodzi do packingu
 
 ## Event log
 
 Tabela:
 - `picking_events`
 
-Najważniejsze typy eventów:
+Typy eventów:
 - `batch_opened`
 - `batch_refilled`
 - `selection_mode_changed`
@@ -400,18 +216,10 @@ Najważniejsze typy eventów:
 - `batch_closed`
 - `batch_abandoned`
 
-Payload eventów zawiera już rozszerzone dane produktu, m.in.:
-- `subiekt_tow_id`
-- `product_code`
-- `uom`
-- `is_unmapped`
+## Ważne doprecyzowanie
 
----
+`picking_batch_orders` jest aktywnie używana przez system.
+To nie jest tabela pomocnicza ani martwy artefakt.
 
-## Najważniejsze różnice względem starych docs
-
-- dokumentacja musi rozróżniać default `cutoff_cluster` od fallbacku błędnej wartości do `cutoff`
-- `missing` nie dropuje automatycznie orderu
-- manualny `drop` robi refill od razu
-- `orders` nie pokazuje orderów dropped
-- `uom` istnieje w modelu, ale dziś jest w praktyce puste w danych źródłowych
+`orders` w API służy do operacji item-level.
+`products` w API służy do renderowania głównej listy zbiorczej.

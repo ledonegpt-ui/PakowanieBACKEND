@@ -33,7 +33,14 @@ final class AuthRepository
     public function findActiveStationByCode(string $stationCode): ?array
     {
         $sql = "
-            SELECT id, station_code, station_name, printer_ip, printer_name, is_active
+            SELECT
+                id,
+                station_code,
+                station_name,
+                printer_ip,
+                printer_name,
+                package_mode_default,
+                is_active
             FROM stations
             WHERE is_active = 1
               AND station_code = :station_code
@@ -59,13 +66,32 @@ final class AuthRepository
         $st->execute([':user_id' => $userId]);
     }
 
-    public function createSession(int $userId, int $stationId, string $token, string $workflowMode): void
-    {
+    public function createSession(
+        int $userId,
+        int $stationId,
+        string $token,
+        string $workflowMode,
+        string $packageMode
+    ): void {
         $sql = "
             INSERT INTO user_station_sessions (
-                user_id, station_id, session_token, workflow_mode, started_at, last_seen_at, is_active
+                user_id,
+                station_id,
+                session_token,
+                workflow_mode,
+                package_mode,
+                started_at,
+                last_seen_at,
+                is_active
             ) VALUES (
-                :user_id, :station_id, :session_token, :workflow_mode, NOW(), NOW(), 1
+                :user_id,
+                :station_id,
+                :session_token,
+                :workflow_mode,
+                :package_mode,
+                NOW(),
+                NOW(),
+                1
             )
         ";
         $st = $this->db->prepare($sql);
@@ -74,6 +100,7 @@ final class AuthRepository
             ':station_id' => $stationId,
             ':session_token' => $token,
             ':workflow_mode' => $workflowMode,
+            ':package_mode' => $packageMode,
         ]);
     }
 
@@ -84,6 +111,7 @@ final class AuthRepository
                 s.id AS session_id,
                 s.session_token,
                 s.workflow_mode,
+                s.package_mode,
                 s.started_at,
                 s.last_seen_at,
                 u.id AS user_id,
@@ -94,7 +122,8 @@ final class AuthRepository
                 st.station_code,
                 st.station_name,
                 st.printer_ip,
-                st.printer_name
+                st.printer_name,
+                st.package_mode_default
             FROM user_station_sessions s
             INNER JOIN users u ON u.id = s.user_id
             INNER JOIN stations st ON st.id = s.station_id

@@ -1,26 +1,84 @@
-# Backend Workstreams — aktualizacja 2026-03-12 (sesja 3)
+# Backend workstreams
 
-## Zrobione w sesji 3 (2026-03-12)
-- ✅ `PICKING_BATCH_SIZE` — konfigurowalny rozmiar batcha przez `.env`
-- ✅ `ShippingService::generateLabel()` — wyodrębniona logika z kontrolera
-- ✅ `PackingController::finish()` — generuje etykietę + drukuje przed zamknięciem sesji
-- ✅ `PackingService::finishSession()` — zwraca `next_order_code`, `batch_completed`, `carrier_key`
-- ✅ `PackingRepository` — dodane `findNextBatchOrder()` i `findBatchCarrierKey()`
-- ✅ `AllegroTokenProvider` — token z MYSQL2 (allegro_accounts)
-- ✅ `PackingRepository` — poprawiony błąd składni (metody były poza klasą)
+## Założenie
 
-## Zrobione w sesji 2 (2026-03-11)
-- ✅ Resolver — naprawione wszystkie błędy mapowania
-- ✅ InPostAdapter — paczkomat + kurier + COD + Smart + service dynamiczny
-- ✅ GlsAdapter — SOAP ADE API, COD, ZPL, reprint
-- ✅ DpdAdapter — ObjServices SOAP, COD, PDF
-- ✅ AllegroAdapter — wszystkie metody, COD, punkty odbioru, zagraniczne
-- ✅ BaseLinkerAdapter — ERLI przez BL API, createPackage + getLabel
-- ✅ ZebraPrinter — drukowanie przez CUPS
-- ✅ ShippingController — requires_size flow, automatyczny wydruk
-- ✅ pickup_point_id w bazie i findOrder()
+Repo ma dziś dwa równoległe nurty:
+- nowy modułowy backend `/api/v1`
+- starszy plikowy flow w `api/*.php` i starych widokach
 
-## Do zrobienia
-- Testy end-to-end z tabletu (pełny flow picking → packing → label → print → next)
-- `ShippingRepository` — pusty, nie blokuje działania
-- `picking_batch_orders` — tabela pusta, picking nie przypisuje jeszcze zamówień do batchy
+---
+
+## Workstream 1 — import zamówień
+
+Źródło danych:
+- `pak_orders`
+- `pak_order_items`
+
+---
+
+## Workstream 2 — picking (`/api/v1`)
+
+Główne tabele:
+- `picking_batches`
+- `picking_batch_orders`
+- `picking_order_items`
+- `picking_batch_items`
+- `picking_events`
+
+Ważne:
+- `picking_batch_orders` jest aktywnie używana
+- `missing` działa na poziomie itemu
+- manual drop order jest osobną akcją
+
+---
+
+## Workstream 3 — packing (`/api/v1`)
+
+Główne tabele:
+- `packing_sessions`
+- `packing_session_items`
+- `packing_events`
+
+Ważne:
+- `finish` nie jest głównym miejscem generowania etykiety
+- przed zamknięciem sesji musi istnieć paczka i etykieta
+
+---
+
+## Workstream 4 — shipping (`/api/v1`)
+
+Shipping odpowiada za:
+- resolve dostawcy
+- adapter przewoźnika
+- `packages`
+- `package_labels`
+- wygenerowanie etykiety
+
+---
+
+## Workstream 5 — heartbeat
+
+Endpointy:
+- `POST /api/v1/heartbeat`
+- `POST /api/v1/packing/orders/{orderId}/heartbeat`
+
+Global heartbeat jest głównym mechanizmem keepalive.
+
+---
+
+## Workstream 6 — legacy queue i legacy packing
+
+Główne pliki:
+- `queue.php`
+- `order.php`
+- `api/login.php`
+- `api/login_queue.php`
+- `api/session.php`
+- `api/queue.php`
+- `api/start_pack.php`
+- `api/finish_pack.php`
+- `api/cancel_pack.php`
+- `api/scan.php`
+- `api/events.php`
+
+Legacy flow nadal jest częścią projektu i musi być dokumentowany osobno od nowego API.

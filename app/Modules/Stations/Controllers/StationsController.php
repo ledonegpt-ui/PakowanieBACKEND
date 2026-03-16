@@ -42,4 +42,27 @@ final class StationsController
             ],
         ]);
     }
+
+    public function packageMode(): void
+    {
+        try {
+            require_once __DIR__ . '/../../../Lib/Db.php';
+            require_once __DIR__ . '/../Repositories/StationsRepository.php';
+            require_once __DIR__ . '/../Services/StationsService.php';
+
+            $db = Db::mysql($this->cfg);
+            $repo = new StationsRepository($db);
+            $service = new StationsService($repo);
+
+            $body = Request::jsonBody();
+            $result = $service->updatePackageMode(Request::bearerToken(), $body);
+
+            ApiResponse::ok([
+                'ok' => true,
+                'data' => $result,
+            ]);
+        } catch (Throwable $e) {
+            ApiResponse::error($e->getMessage(), 400);
+        }
+    }
 }

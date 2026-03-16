@@ -18,7 +18,7 @@ final class PickingBatchRepository
     public function findOpenBatchForUser(int $userId): ?array
     {
         $sql = "
-            SELECT id, batch_code, carrier_key, user_id, station_id,
+            SELECT id, batch_code, carrier_key, package_mode, user_id, station_id,
                    status, workflow_mode, selection_mode, target_orders_count,
                    started_at, completed_at, abandoned_at
             FROM picking_batches
@@ -36,7 +36,7 @@ final class PickingBatchRepository
     public function findOpenBatchForUserForUpdate(int $userId): ?array
     {
         $sql = "
-            SELECT id, batch_code, carrier_key, user_id, station_id,
+            SELECT id, batch_code, carrier_key, package_mode, user_id, station_id,
                    status, workflow_mode, selection_mode, target_orders_count,
                    started_at, completed_at, abandoned_at
             FROM picking_batches
@@ -55,7 +55,7 @@ final class PickingBatchRepository
     public function findBatchById(int $batchId): ?array
     {
         $sql = "
-            SELECT id, batch_code, carrier_key, user_id, station_id,
+            SELECT id, batch_code, carrier_key, package_mode, user_id, station_id,
                    status, workflow_mode, selection_mode, target_orders_count,
                    started_at, completed_at, abandoned_at
             FROM picking_batches
@@ -71,7 +71,7 @@ final class PickingBatchRepository
     public function findBatchByIdForUpdate(int $batchId): ?array
     {
         $sql = "
-            SELECT id, batch_code, carrier_key, user_id, station_id,
+            SELECT id, batch_code, carrier_key, package_mode, user_id, station_id,
                    status, workflow_mode, selection_mode, target_orders_count,
                    started_at, completed_at, abandoned_at
             FROM picking_batches
@@ -105,6 +105,7 @@ final class PickingBatchRepository
     public function createBatch(
         string $batchCode,
         string $carrierKey,
+        string $packageMode,
         int $userId,
         int $stationId,
         string $workflowMode,
@@ -113,16 +114,17 @@ final class PickingBatchRepository
     ): int {
         $sql = "
             INSERT INTO picking_batches
-                (batch_code, carrier_key, user_id, station_id, status,
+                (batch_code, carrier_key, package_mode, user_id, station_id, status,
                  workflow_mode, selection_mode, target_orders_count, started_at, created_at, updated_at)
             VALUES
-                (:batch_code, :carrier_key, :user_id, :station_id, 'open',
+                (:batch_code, :carrier_key, :package_mode, :user_id, :station_id, 'open',
                  :workflow_mode, :selection_mode, :target_orders_count, NOW(), NOW(), NOW())
         ";
         $st = $this->db->prepare($sql);
         $st->execute([
             ':batch_code'          => $batchCode,
             ':carrier_key'         => $carrierKey,
+            ':package_mode'        => $packageMode,
             ':user_id'             => $userId,
             ':station_id'          => $stationId,
             ':workflow_mode'       => $workflowMode,
@@ -205,6 +207,7 @@ final class PickingBatchRepository
 
     public function findAvailableOrdersForGroup(
         string $carrierKey,
+        string $packageMode,
         array $excludeOrderCodes,
         int $limit,
         array $mapCfg
@@ -235,8 +238,19 @@ final class PickingBatchRepository
         $st->execute($params);
         $candidates = $st->fetchAll(PDO::FETCH_ASSOC);
 
+        if (empty($candidates)) {
+            return array();
+        }
+
         require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
         $resolver = new ShippingMethodResolver($mapCfg);
+
+        $candidateOrderCodes = array();
+        foreach ($candidates as $candidate) {
+            $candidateOrderCodes[] = (string)$candidate['order_code'];
+        }
+
+        $orderPackageModes = $this->getOrderPackageModes($candidateOrderCodes);
         $result = [];
 
         foreach ($candidates as $row) {
@@ -246,11 +260,22 @@ final class PickingBatchRepository
                 'courier_code'    => (string)($row['courier_code'] ?? ''),
             ]);
 
-            if ((string)$resolved['menu_group'] === $carrierKey) {
-                $result[] = $row;
-                if (count($result) >= $limit) {
-                    break;
-                }
+            $orderCode = (string)$row['order_code'];
+            $orderPackageMode = isset($orderPackageModes[$orderCode])
+                ? (string)$orderPackageModes[$orderCode]
+                : 'unknown';
+
+            if ((string)$resolved['menu_group'] !== $carrierKey) {
+                continue;
+            }
+
+            if ($orderPackageMode !== $packageMode) {
+                continue;
+            }
+
+            $result[] = $row;
+            if (count($result) >= $limit) {
+                break;
             }
         }
 
@@ -259,6 +284,7 @@ final class PickingBatchRepository
 
     public function findAvailableOrdersForGroupEmergencySingle(
         string $carrierKey,
+        string $packageMode,
         array $excludeOrderCodes,
         array $mapCfg
     ): array {
@@ -288,8 +314,19 @@ final class PickingBatchRepository
         $st->execute($params);
         $candidates = $st->fetchAll(PDO::FETCH_ASSOC);
 
+        if (empty($candidates)) {
+            return array();
+        }
+
         require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
         $resolver = new ShippingMethodResolver($mapCfg);
+
+        $candidateOrderCodes = array();
+        foreach ($candidates as $candidate) {
+            $candidateOrderCodes[] = (string)$candidate['order_code'];
+        }
+
+        $orderPackageModes = $this->getOrderPackageModes($candidateOrderCodes);
 
         foreach ($candidates as $row) {
             $resolved = $resolver->resolve([
@@ -298,12 +335,78 @@ final class PickingBatchRepository
                 'courier_code'    => (string)($row['courier_code'] ?? ''),
             ]);
 
-            if ((string)$resolved['menu_group'] === $carrierKey) {
-                return array($row);
+            $orderCode = (string)$row['order_code'];
+            $orderPackageMode = isset($orderPackageModes[$orderCode])
+                ? (string)$orderPackageModes[$orderCode]
+                : 'unknown';
+
+            if ((string)$resolved['menu_group'] !== $carrierKey) {
+                continue;
             }
+
+            if ($orderPackageMode !== $packageMode) {
+                continue;
+            }
+
+            return array($row);
         }
 
         return array();
+    }
+
+    public function getOrderPackageModes(array $orderCodes): array
+    {
+        if (empty($orderCodes)) {
+            return array();
+        }
+
+        $placeholders = implode(',', array_fill(0, count($orderCodes), '?'));
+
+        $sql = "
+            SELECT
+                poi.order_code,
+                CASE
+                    WHEN SUM(
+                        CASE
+                            WHEN poi.subiekt_tow_id IS NULL
+                                 OR psm.subiekt_tow_id IS NULL
+                                 OR psm.size_status IS NULL
+                            THEN 1 ELSE 0
+                        END
+                    ) > 0 THEN 'unknown'
+                    WHEN SUM(CASE WHEN psm.size_status = 'large' THEN 1 ELSE 0 END) > 0 THEN 'large'
+                    ELSE 'small'
+                END AS package_mode
+            FROM pak_order_items poi
+            LEFT JOIN product_size_map psm
+                ON psm.subiekt_tow_id = poi.subiekt_tow_id
+            WHERE poi.order_code IN ($placeholders)
+            GROUP BY poi.order_code
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute(array_values($orderCodes));
+
+        $result = array();
+        foreach ($orderCodes as $orderCode) {
+            $result[(string)$orderCode] = 'unknown';
+        }
+
+        while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
+            $orderCode = (string)($row['order_code'] ?? '');
+            if ($orderCode === '') {
+                continue;
+            }
+
+            $packageMode = isset($row['package_mode']) ? trim((string)$row['package_mode']) : 'unknown';
+            if (!in_array($packageMode, array('small', 'large', 'unknown'), true)) {
+                $packageMode = 'unknown';
+            }
+
+            $result[$orderCode] = $packageMode;
+        }
+
+        return $result;
     }
 
     // -------------------------------------------------------------------------

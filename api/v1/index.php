@@ -50,6 +50,9 @@ $routes = [
     ['POST', '/api/v1/stations/select', function (array $params) use ($cfg): void {
         (new StationsController($cfg))->select();
     }],
+    ['POST', '/api/v1/stations/package-mode', function (array $params) use ($cfg): void {
+        (new StationsController($cfg))->packageMode();
+    }],
 
     ['POST', '/api/v1/picking/batches/open', function (array $params): void {
         (new PickingBatchesController())->open($params);

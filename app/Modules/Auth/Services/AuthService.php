@@ -40,20 +40,30 @@ final class AuthService
         }
 
         $token = bin2hex(random_bytes(32));
+        $workflowMode = ($workflowMode !== '' ? $workflowMode : 'integrated');
+
+        $packageMode = isset($station['package_mode_default'])
+            ? trim((string)$station['package_mode_default'])
+            : 'small';
+
+        if (!in_array($packageMode, ['small', 'large'], true)) {
+            $packageMode = 'small';
+        }
 
         $this->repo->deactivateActiveSessionsForUser((int)$user['id']);
         $this->repo->createSession(
             (int)$user['id'],
             (int)$station['id'],
             $token,
-            ($workflowMode !== '' ? $workflowMode : 'integrated')
+            $workflowMode,
+            $packageMode
         );
 
         $roles = $this->repo->rolesForUser((int)$user['id']);
 
         return [
             'token' => $token,
-            'workflow_mode' => ($workflowMode !== '' ? $workflowMode : 'integrated'),
+            'workflow_mode' => $workflowMode,
             'user' => [
                 'id' => (int)$user['id'],
                 'login' => $user['login'],
@@ -67,6 +77,8 @@ final class AuthService
                 'station_name' => $station['station_name'],
                 'printer_ip' => $station['printer_ip'],
                 'printer_name' => $station['printer_name'],
+                'package_mode' => $packageMode,
+                'package_mode_default' => $packageMode,
             ],
         ];
     }
@@ -85,6 +97,19 @@ final class AuthService
         $this->repo->touchSession($token);
         $roles = $this->repo->rolesForUser((int)$session['user_id']);
 
+        $packageMode = isset($session['package_mode']) ? trim((string)$session['package_mode']) : 'small';
+        if (!in_array($packageMode, ['small', 'large'], true)) {
+            $packageMode = 'small';
+        }
+
+        $packageModeDefault = isset($session['package_mode_default'])
+            ? trim((string)$session['package_mode_default'])
+            : 'small';
+
+        if (!in_array($packageModeDefault, ['small', 'large'], true)) {
+            $packageModeDefault = 'small';
+        }
+
         return [
             'token' => $session['session_token'],
             'workflow_mode' => $session['workflow_mode'],
@@ -101,6 +126,8 @@ final class AuthService
                 'station_name' => $session['station_name'],
                 'printer_ip' => $session['printer_ip'],
                 'printer_name' => $session['printer_name'],
+                'package_mode' => $packageMode,
+                'package_mode_default' => $packageModeDefault,
             ],
             'session' => [
                 'session_id' => (int)$session['session_id'],

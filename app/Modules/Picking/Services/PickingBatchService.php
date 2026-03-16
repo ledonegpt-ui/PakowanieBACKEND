@@ -40,6 +40,11 @@ final class PickingBatchService
             $targetOrdersCount = 10;
         }
 
+        $packageMode = isset($session['package_mode']) ? trim((string)$session['package_mode']) : 'small';
+        if (!in_array($packageMode, array('small', 'large'), true)) {
+            $packageMode = 'small';
+        }
+
         $this->repo->beginTransaction();
         try {
             $existing = $this->repo->findOpenBatchForUserForUpdate((int)$session['user_id']);
@@ -50,7 +55,7 @@ final class PickingBatchService
             }
 
             $excludedCodes = $this->repo->getOrderCodesInOpenBatches();
-            $orders = $this->selectOrdersForBatch($carrierKey, $excludedCodes, $targetOrdersCount, $selectionMode);
+            $orders = $this->selectOrdersForBatch($carrierKey, $packageMode, $excludedCodes, $targetOrdersCount, $selectionMode);
 
             if (empty($orders)) {
                 throw new RuntimeException('No available orders for carrier_key: ' . $carrierKey);
@@ -60,6 +65,7 @@ final class PickingBatchService
             $batchId = $this->repo->createBatch(
                 $batchCode,
                 $carrierKey,
+                $packageMode,
                 (int)$session['user_id'],
                 (int)$session['station_id'],
                 (string)($session['workflow_mode'] ?? 'integrated'),
@@ -80,6 +86,7 @@ final class PickingBatchService
                 [
                     'batch_id'       => $batchId,
                     'carrier_key'    => $carrierKey,
+                    'package_mode'   => $packageMode,
                     'selection_mode' => $selectionMode,
                     'orders_count'   => count($orders),
                     'user_id'        => (int)$session['user_id'],
@@ -481,7 +488,15 @@ final class PickingBatchService
                 $needed = min($needed, 1);
             }
 
-            $newOrders = $this->selectOrdersForBatch((string)$batch['carrier_key'], $excludedCodes, $needed, $selectionMode);
+            $packageMode = isset($batch['package_mode']) ? trim((string)$batch['package_mode']) : '';
+            if ($packageMode === '') {
+                $packageMode = isset($session['package_mode']) ? trim((string)$session['package_mode']) : 'small';
+            }
+            if (!in_array($packageMode, array('small', 'large'), true)) {
+                $packageMode = 'small';
+            }
+
+            $newOrders = $this->selectOrdersForBatch((string)$batch['carrier_key'], $packageMode, $excludedCodes, $needed, $selectionMode);
 
             foreach ($newOrders as $order) {
                 $batchOrderId = $this->repo->insertBatchOrder($batchId, $order['order_code']);
@@ -497,6 +512,7 @@ final class PickingBatchService
                     [
                         'batch_id'            => $batchId,
                         'selection_mode'      => $selectionMode,
+                        'package_mode'        => $packageMode,
                         'added_orders_count'  => count($newOrders),
                         'target_orders_count' => $target,
                         'user_id'             => (int)$session['user_id'],
@@ -544,27 +560,27 @@ final class PickingBatchService
         );
     }
 
-    private function selectOrdersForBatch(string $carrierKey, array $excludedCodes, int $limit, string $selectionMode): array
+    private function selectOrdersForBatch(string $carrierKey, string $packageMode, array $excludedCodes, int $limit, string $selectionMode): array
     {
         if ($limit <= 0) {
             return array();
         }
 
         if ($selectionMode === 'emergency_single') {
-            return $this->repo->findAvailableOrdersForGroupEmergencySingle($carrierKey, $excludedCodes, $this->mapCfg);
+            return $this->repo->findAvailableOrdersForGroupEmergencySingle($carrierKey, $packageMode, $excludedCodes, $this->mapCfg);
         }
 
         if ($selectionMode === 'cutoff_cluster') {
-            return $this->selectOrdersForBatchCutoffCluster($carrierKey, $excludedCodes, $limit);
+            return $this->selectOrdersForBatchCutoffCluster($carrierKey, $packageMode, $excludedCodes, $limit);
         }
 
-        return $this->repo->findAvailableOrdersForGroup($carrierKey, $excludedCodes, $limit, $this->mapCfg);
+        return $this->repo->findAvailableOrdersForGroup($carrierKey, $packageMode, $excludedCodes, $limit, $this->mapCfg);
     }
 
-    private function selectOrdersForBatchCutoffCluster(string $carrierKey, array $excludedCodes, int $limit): array
+    private function selectOrdersForBatchCutoffCluster(string $carrierKey, string $packageMode, array $excludedCodes, int $limit): array
     {
         $candidateLimit = max($limit * 20, 200);
-        $candidates = $this->repo->findAvailableOrdersForGroup($carrierKey, $excludedCodes, $candidateLimit, $this->mapCfg);
+        $candidates = $this->repo->findAvailableOrdersForGroup($carrierKey, $packageMode, $excludedCodes, $candidateLimit, $this->mapCfg);
 
         if (empty($candidates)) {
             return array();

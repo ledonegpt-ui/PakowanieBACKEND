@@ -91,9 +91,9 @@ final class SubiektReaderV2
         }
 
         if (!empty($s['uwCol'])) {
-            $sql .= " AND (d.{$s['uwCol']} IS NULL OR (d.{$s['uwCol']} NOT LIKE :badUwBang AND d.{$s['uwCol']} NOT LIKE :badUwW0))";
+            $sql .= " AND (d.{$s['uwCol']} IS NULL OR (d.{$s['uwCol']} NOT LIKE :badUwBang AND UPPER(d.{$s['uwCol']}) NOT LIKE :badUwW))";
             $bind[':badUwBang'] = '%!%';
-            $bind[':badUwW0']   = '%W-0%';
+            $bind[':badUwW']    = '%W-%';
         }
 
         $sql .= " ORDER BY d.dok_Id ASC";

@@ -1,45 +1,77 @@
-# Moduły backendu — stan i cele
+# Moduły docelowe i aktywne
 
-## Foundation
-- POTWIERDZONE: bootstrap, DB, ApiResponse, Request, Route, AuthMiddleware — gotowe
+## Cel tego pliku
 
-## Import
-- POTWIERDZONE: importer działa, nie ruszać
-- Pliki krytyczne: ImporterMasterV2, BaselinkerBatchReader, SubiektReaderV2, FirebirdEUReader, OrderRepositoryV2
-- PLANOWANE: późniejsze dopasowanie pól importowanych do nowego modelu workflow
+Ten dokument opisuje **co realnie istnieje dziś w repo** oraz jak traktować to w dokumentacji.
 
-## Auth / Stations
-- POTWIERDZONE: login przez barcode + station_code, bearer token, sesje — gotowe
-- POTWIERDZONE: tabele users, user_roles, stations, user_station_sessions istnieją
+Repo zawiera:
+1. **aktywny modułowy backend `/api/v1`**
+2. **aktywny legacy flow oparty o `api/*.php` oraz stare widoki**
 
-## Carriers / Resolver
-- POTWIERDZONE: ShippingMethodResolver działa
-- POTWIERDZONE: shipping_map.php z pełnymi regułami, priorytety poprawne od 2026-03-11
-- Kluczowe: menu_group != label_provider — resolver rozdziela te pojęcia
+Dokumentacja powinna rozróżniać te dwie warstwy.
 
-## Picking
-- POTWIERDZONE: kompletny, domknięty, nie ruszać
+---
 
-## Packing
-- POTWIERDZONE: szkielet gotowy (open/show/cancel/finish)
-- PLANOWANE: domknięcie finish po działających etykietach
+## Aktywne moduły nowego API
 
-## Shipping / Etykiety
-- POTWIERDZONE: ShippingAdapterFactory działa
-- POTWIERDZONE: DpdAdapter zaimplementowany (bug XML do naprawy)
-- PLANOWANE: GlsAdapter — ma credentials w DB, do implementacji
-- PLANOWANE: BaseLinkerAdapter — ma token w DB, do implementacji (używany przez ERLI)
-- DECYZJA_WYMAGANA: AllegroAdapter — token CHANGE_ME, najpierw uzupełnić credentials
-- DECYZJA_WYMAGANA: InPostAdapter — token CHANGE_ME, najpierw uzupełnić credentials
-- PLANOWANE: refaktor logiki z ShippingController do ShippingService + ShippingRepository
+### Auth
+Status: **wdrożony**
 
-## Events / Audit
-- POTWIERDZONE: picking_events działa
-- POTWIERDZONE: packing_events działa
-- POTWIERDZONE: tabele order_events, api_request_logs, workflow_errors istnieją
+### Stations
+Status: **wdrożony częściowo**
 
-## Korekta 2026-03-13 — Picking
-- POTWIERDZONE: `picking_batch_orders` jest aktywnie używana przez system
-- POTWIERDZONE: picking operuje na lokalnej kopii pozycji zamówienia
-- POTWIERDZONE: pozycje pickingu są subiektowe (`pak_order_items`), a nie równoległe source line'y EU/BL
-- POTWIERDZONE: `offer_id` w `pak_order_items` jest kluczowym łącznikiem pozycji z marketplace
+Uwaga:
+- `POST /api/v1/stations/select` istnieje w routerze, ale obecnie jest lekkim endpointem technicznym / stubem
+
+### Carriers
+Status: **wdrożony**
+
+### Picking
+Status: **wdrożony**
+
+Obsługuje:
+- open batch
+- refill
+- `selection_mode`
+- mark item picked
+- mark item missing
+- manual drop order
+- close / abandon
+- event log
+
+### Packing
+Status: **wdrożony**
+
+Nowy packing działa sesyjnie i ma własne snapshoty:
+- `packing_sessions`
+- `packing_session_items`
+
+### Shipping
+Status: **wdrożony**
+
+W repo istnieją adaptery m.in. dla:
+- Allegro
+- BaseLinker
+- DPD
+- GLS
+- InPost
+
+### Heartbeat
+Status: **wdrożony**
+
+Główny endpoint:
+- `POST /api/v1/heartbeat`
+
+---
+
+## Legacy flow
+
+Status: **nadal obecny w repo i nadal istotny dokumentacyjnie**
+
+Legacy warstwa obejmuje:
+- `queue.php`
+- `order.php`
+- `api/*.php`
+- `assets/js/queue.js`
+
+Dopóki te pliki istnieją i są używane, dokumentacja projektu musi je obejmować.

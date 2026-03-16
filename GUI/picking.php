@@ -62,6 +62,27 @@ if (!isset($_SESSION['picking_logs']) || !is_array($_SESSION['picking_logs'])) {
     $_SESSION['picking_logs'] = array();
 }
 
+$meRes = apicall('GET', '/auth/me');
+save_log('auth_me_sync', $meRes, false);
+
+if (isset($meRes['data']['auth']['station']) && is_array($meRes['data']['auth']['station'])) {
+    $_SESSION['station'] = $meRes['data']['auth']['station'];
+}
+if (isset($meRes['data']['auth']['user']) && is_array($meRes['data']['auth']['user'])) {
+    $_SESSION['user'] = $meRes['data']['auth']['user'];
+}
+
+$station = isset($_SESSION['station']) && is_array($_SESSION['station']) ? $_SESSION['station'] : array();
+$currentPackageMode = isset($station['package_mode']) ? trim((string)$station['package_mode']) : 'small';
+$defaultPackageMode = isset($station['package_mode_default']) ? trim((string)$station['package_mode_default']) : $currentPackageMode;
+
+if (!in_array($currentPackageMode, array('small', 'large'), true)) {
+    $currentPackageMode = 'small';
+}
+if (!in_array($defaultPackageMode, array('small', 'large'), true)) {
+    $defaultPackageMode = $currentPackageMode;
+}
+
 $carrier = isset($_GET['carrier']) ? trim($_GET['carrier']) : '';
 if ($carrier !== '') {
     $_SESSION['carrier'] = $carrier;
@@ -73,6 +94,31 @@ if (isset($_GET['reset']) && $_GET['reset'] == '1') {
     unset($_SESSION['batch']);
     unset($_SESSION['last_action_response']);
     $_SESSION['picking_logs'] = array();
+    $target = 'picking.php';
+    if ($carrier !== '') {
+        $target .= '?carrier=' . urlencode($carrier);
+    }
+    header('Location: ' . $target);
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'change_package_mode') {
+    $newPackageMode = isset($_POST['package_mode']) ? trim((string)$_POST['package_mode']) : '';
+
+    $actionRes = apicall('POST', '/stations/package-mode', array(
+        'package_mode' => $newPackageMode
+    ));
+    save_log('change_package_mode mode=' . $newPackageMode, $actionRes);
+
+    if (isset($actionRes['data']['data']['station']) && is_array($actionRes['data']['data']['station'])) {
+        $_SESSION['station']['package_mode'] = $actionRes['data']['data']['station']['package_mode'];
+        if (isset($actionRes['data']['data']['station']['package_mode_default'])) {
+            $_SESSION['station']['package_mode_default'] = $actionRes['data']['data']['station']['package_mode_default'];
+        }
+    }
+
+    unset($_SESSION['batch']);
+
     $target = 'picking.php';
     if ($carrier !== '') {
         $target .= '?carrier=' . urlencode($carrier);
@@ -115,6 +161,11 @@ $batchId = (int)$_SESSION['batch'];
 $currentSelectionMode = 'cutoff_cluster';
 if (isset($batchData['batch']['selection_mode']) && trim((string)$batchData['batch']['selection_mode']) !== '') {
     $currentSelectionMode = trim((string)$batchData['batch']['selection_mode']);
+}
+
+$batchPackageMode = isset($batchData['batch']['package_mode']) ? trim((string)$batchData['batch']['package_mode']) : $currentPackageMode;
+if (!in_array($batchPackageMode, array('small', 'large'), true)) {
+    $batchPackageMode = $currentPackageMode;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
@@ -288,6 +339,8 @@ th{background:#f7f7f7}
 pre{white-space:pre-wrap;word-break:break-word;background:#111;color:#f2f2f2;padding:12px;border-radius:6px;overflow:auto}
 .log-item{border-bottom:1px solid #ddd;padding:8px 0}
 .qty-line{line-height:1.5}
+.mode-switch{margin-top:10px;padding:10px;background:#f7f7f7;border-radius:6px}
+.mode-switch select{padding:6px 8px}
 </style>
 <script>
 function submitMissing(formId) {
@@ -345,11 +398,28 @@ function submitDrop(formId) {
 
         <div class="card">
             <h2>Picking batch #<?php echo h($batchId); ?></h2>
+            <div>Stanowisko: <?php echo h(isset($_SESSION['station']['station_code']) ? $_SESSION['station']['station_code'] : '—'); ?></div>
             <div>Carrier: <?php echo h($carrier); ?></div>
+            <div>Tryb stanowiska (sesja): <strong><?php echo h($currentPackageMode); ?></strong></div>
+            <div>Tryb batcha: <strong><?php echo h($batchPackageMode); ?></strong></div>
+            <div class="small">Domyślny tryb stanowiska: <?php echo h($defaultPackageMode); ?></div>
             <div>Tryb doboru: <strong><?php echo h($currentSelectionMode); ?></strong></div>
             <div>Aktywne pozycje order-level: <?php echo h(count($rows)); ?></div>
             <div>Pozycje jeszcze do obsługi: <?php echo h($pendingRowsCount); ?></div>
             <div>Produktów zbiorczo: <?php echo h(count($products)); ?></div>
+
+            <div class="mode-switch">
+                <form method="post" action="picking.php<?php echo $carrier !== '' ? '?carrier=' . urlencode($carrier) : ''; ?>">
+                    <input type="hidden" name="action" value="change_package_mode">
+                    <label for="package_mode"><strong>Tryb stanowiska:</strong></label>
+                    <select name="package_mode" id="package_mode">
+                        <option value="small" <?php echo $currentPackageMode === 'small' ? 'selected' : ''; ?>>MAŁE</option>
+                        <option value="large" <?php echo $currentPackageMode === 'large' ? 'selected' : ''; ?>>DUŻE</option>
+                    </select>
+                    <button type="submit" class="btn-top gray" style="border:0;cursor:pointer;">Zapisz tryb</button>
+                </form>
+                <div class="small" style="margin-top:6px;">Po zmianie trybu ekran odświeży sesję stanowiska. Dla nowo otwieranych batchy backend dobierze zamówienia zgodnie z carrier + package_mode.</div>
+            </div>
 
             <form method="post" action="picking.php<?php echo $carrier !== '' ? '?carrier=' . urlencode($carrier) : ''; ?>" style="margin-top:10px;">
                 <input type="hidden" name="action" value="change_selection_mode">
@@ -518,58 +588,52 @@ function submitDrop(formId) {
             </table>
         </div>
 
+        <?php if (!empty($orders)): ?>
         <div class="card">
-            <h3>Pozycje order-level do oznaczenia</h3>
-
+            <h3>Order-level rows</h3>
             <table>
                 <tr>
-                    <th>Zamówienie</th>
-                    <th>Produkt</th>
+                    <th>Order</th>
+                    <th>Item</th>
                     <th>Ilość</th>
                     <th>Status</th>
-                    <th>Akcja</th>
+                    <th>Akcje</th>
                 </tr>
                 <?php foreach ($rows as $r): ?>
                 <?php
-                    $statusClass = status_badge_class(isset($r['status']) ? $r['status'] : '');
                     $missingFormId = 'missing_' . $r['order_id'] . '_' . $r['item_id'];
                     $dropFormId = 'drop_' . $r['order_id'];
-                    $rowUom = isset($r['uom']) && $r['uom'] !== '' ? (string)$r['uom'] : '';
                 ?>
                 <tr>
                     <td>
-                        <?php echo h($r['order_code']); ?><br>
+                        <strong><?php echo h($r['order_code']); ?></strong><br>
                         <span class="small"><?php echo h($r['delivery_method']); ?></span>
                     </td>
                     <td>
-                        <strong><?php echo h($r['product_name']); ?></strong><br>
-                        <span class="small">product_code: <?php echo h($r['product_code']); ?></span><br>
-                        <span class="small">subiekt_tow_id: <?php echo h($r['subiekt_tow_id'] !== '' ? $r['subiekt_tow_id'] : '—'); ?></span>
-                        <?php if ($rowUom !== ''): ?>
-                            <br><span class="small">uom: <?php echo h($rowUom); ?></span>
+                        <?php echo h($r['product_name']); ?><br>
+                        <span class="small">code: <?php echo h($r['product_code']); ?></span><br>
+                        <span class="small">subiekt_tow_id: <?php echo h($r['subiekt_tow_id'] !== '' ? $r['subiekt_tow_id'] : '—'); ?></span><br>
+                        <span class="small">uom: <?php echo h($r['uom'] !== '' ? $r['uom'] : '—'); ?></span><br>
+                        <?php if ($r['is_unmapped']): ?>
+                            <span class="small">fallback legacy / is_unmapped</span><br>
                         <?php endif; ?>
-                        <?php if (!empty($r['is_unmapped'])): ?>
-                            <br><span class="small">is_unmapped: true</span>
-                        <?php endif; ?>
-                    </td>
-                    <td>
-                        <?php echo h(qty_text($r['expected_qty'])); ?><?php echo $rowUom !== '' ? ' ' . h($rowUom) : ''; ?><br>
-                        <span class="small">zebrane: <?php echo h(qty_text($r['picked_qty'])); ?></span>
-                    </td>
-                    <td>
-                        <span class="<?php echo h($statusClass); ?>"><?php echo h($r['status']); ?></span>
-                        <?php if ($r['missing_reason'] !== ''): ?>
-                            <div class="small"><?php echo h($r['missing_reason']); ?></div>
+                        <?php if ($r['missing_reason']): ?>
+                            <span class="small">reason: <?php echo h($r['missing_reason']); ?></span>
                         <?php endif; ?>
                     </td>
+                    <td><?php echo h(qty_text($r['expected_qty'])); ?></td>
+                    <td><span class="<?php echo h(status_badge_class($r['status'])); ?>"><?php echo h($r['status']); ?></span></td>
                     <td class="actions">
+                        <?php if ($r['status'] !== 'picked'): ?>
                         <form method="post" action="picking.php<?php echo $carrier !== '' ? '?carrier=' . urlencode($carrier) : ''; ?>">
                             <input type="hidden" name="action" value="pick">
                             <input type="hidden" name="order_id" value="<?php echo h($r['order_id']); ?>">
                             <input type="hidden" name="item_id" value="<?php echo h($r['item_id']); ?>">
                             <button type="submit" class="ok">Zebrane</button>
                         </form>
+                        <?php endif; ?>
 
+                        <?php if ($r['status'] !== 'missing'): ?>
                         <form id="<?php echo h($missingFormId); ?>" method="post" action="picking.php<?php echo $carrier !== '' ? '?carrier=' . urlencode($carrier) : ''; ?>">
                             <input type="hidden" name="action" value="missing">
                             <input type="hidden" name="order_id" value="<?php echo h($r['order_id']); ?>">
@@ -577,6 +641,7 @@ function submitDrop(formId) {
                             <input type="hidden" id="<?php echo h($missingFormId); ?>_reason" name="reason" value="">
                             <button type="button" class="no" onclick="return submitMissing('<?php echo h($missingFormId); ?>');">Brak</button>
                         </form>
+                        <?php endif; ?>
 
                         <form id="<?php echo h($dropFormId); ?>" method="post" action="picking.php<?php echo $carrier !== '' ? '?carrier=' . urlencode($carrier) : ''; ?>">
                             <input type="hidden" name="action" value="drop_order">
@@ -589,26 +654,30 @@ function submitDrop(formId) {
                 <?php endforeach; ?>
             </table>
         </div>
+        <?php endif; ?>
     </div>
 
     <div class="right">
         <div class="card">
             <h3>Ostatnia odpowiedź API</h3>
-            <pre><?php print_r($lastResponse); ?></pre>
+            <pre><?php echo h(print_r($lastResponse, true)); ?></pre>
         </div>
 
         <div class="card">
-            <h3>Historia akcji</h3>
-            <?php foreach ($logs as $log): ?>
-                <div class="log-item">
-                    <div><strong><?php echo h($log['label']); ?></strong></div>
-                    <div class="small"><?php echo h($log['time']); ?></div>
-                </div>
-            <?php endforeach; ?>
+            <h3>Log akcji</h3>
+            <?php if (empty($logs)): ?>
+                <div class="muted">brak logów</div>
+            <?php else: ?>
+                <?php foreach ($logs as $log): ?>
+                    <div class="log-item">
+                        <div><strong><?php echo h($log['time']); ?></strong> — <?php echo h($log['label']); ?></div>
+                        <pre><?php echo h(print_r($log['payload'], true)); ?></pre>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
         </div>
     </div>
 
 </div>
-
 </body>
 </html>
