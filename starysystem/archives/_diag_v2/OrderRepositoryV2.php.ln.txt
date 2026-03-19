@@ -1,0 +1,274 @@
+    1: <?php
+    2: declare(strict_types=1);
+    3: 
+    4: final class OrderRepositoryV2
+    5: {
+    6:     /** @var \PDO */
+    7:     private $mysql;
+    8: 
+    9:     public function __construct(\PDO $mysql)
+   10:     {
+   11:         $this->mysql = $mysql;
+   12:     }
+   13: 
+   14:     /**
+   15:      * @return array<string,mixed>|null
+   16:      */
+   17:     public function getMeta(string $orderCode): ?array
+   18:     {
+   19:         $st = $this->mysql->prepare("
+   20:             SELECT order_code, status,
+   21:                    subiekt_doc_id, subiekt_doc_no, subiekt_hint, notes,
+   22:                    nr_nadania, courier_code, courier_inner_number, bl_package_id,
+   23:                    allegro_parcel_id
+   24:             FROM pak_orders
+   25:             WHERE order_code = :c
+   26:             LIMIT 1
+   27:         ");
+   28:         $st->execute([':c' => $orderCode]);
+   29:         $r = $st->fetch(\PDO::FETCH_ASSOC);
+   30:         return $r ? $r : null;
+   31:     }
+   32: 
+   33:     public function fillSubiektDocIfEmpty(string $orderCode, int $docId, string $docNo, string $hint, string $notes): void
+   34:     {
+   35:         $sql = "
+   36:             UPDATE pak_orders
+   37:             SET
+   38:               subiekt_doc_id = IF(subiekt_doc_id IS NULL OR subiekt_doc_id=0, ?, subiekt_doc_id),
+   39:               subiekt_doc_no = IF(subiekt_doc_no IS NULL OR subiekt_doc_no='', ?, subiekt_doc_no),
+   40:               subiekt_hint   = IF(subiekt_hint IS NULL OR subiekt_hint='', ?, subiekt_hint),
+   41:               notes          = IF(notes IS NULL OR notes='', ?, notes),
+   42:               updated_at     = NOW()
+   43:             WHERE order_code = ?
+   44:         ";
+   45:         $st = $this->mysql->prepare($sql);
+   46:         $st->execute([$docId, $docNo, $hint, $notes, $orderCode]);
+   47:     }
+   48: 
+   49:     public function fillTrackingIfEmpty(string $orderCode, string $nr, ?string $courierCode, ?string $inner, $pkgId): void
+   50:     {
+   51:         $nr = trim($nr);
+   52:         $courierCode = ($courierCode !== null && trim($courierCode) !== '') ? trim($courierCode) : null;
+   53:         $inner = ($inner !== null && trim($inner) !== '') ? trim($inner) : null;
+   54:         $pkgId = ($pkgId !== null && (int)$pkgId > 0) ? (int)$pkgId : null;
+   55: 
+   56:         if ($nr === '' && $courierCode === null && $inner === null && $pkgId === null) return;
+   57: 
+   58:         $sql = "
+   59:             UPDATE pak_orders
+   60:             SET
+   61:               nr_nadania = IF((nr_nadania IS NULL OR nr_nadania='') AND ? <> '', ?, nr_nadania),
+   62:               courier_code = IF((courier_code IS NULL OR courier_code='') AND ? IS NOT NULL, ?, courier_code),
+   63:               courier_inner_number = IF((courier_inner_number IS NULL OR courier_inner_number='') AND ? IS NOT NULL, ?, courier_inner_number),
+   64:               bl_package_id = IF((bl_package_id IS NULL OR bl_package_id=0) AND ? IS NOT NULL, ?, bl_package_id),
+   65:               updated_at = NOW()
+   66:             WHERE order_code = ?
+   67:         ";
+   68:         $st = $this->mysql->prepare($sql);
+   69:         $st->execute([
+   70:             $nr, $nr,
+   71:             $courierCode, $courierCode,
+   72:             $inner, $inner,
+   73:             $pkgId, $pkgId,
+   74:             $orderCode
+   75:         ]);
+   76:     }
+   77: 
+   78:     public function fillAllegroParcelIfEmpty(string $orderCode, string $parcelId): void
+   79:     {
+   80:         $parcelId = trim($parcelId);
+   81:         if ($parcelId === '') return;
+   82: 
+   83:         $sql = "
+   84:             UPDATE pak_orders
+   85:             SET
+   86:               allegro_parcel_id = IF(allegro_parcel_id IS NULL OR allegro_parcel_id='', ?, allegro_parcel_id),
+   87:               updated_at = NOW()
+   88:             WHERE order_code = ?
+   89:         ";
+   90:         $st = $this->mysql->prepare($sql);
+   91:         $st->execute([$parcelId, $orderCode]);
+   92:     }
+   93: 
+   94:     public function insertNewOrFillIfExists(array $data): void
+   95:     {
+   96:         $st = $this->mysql->prepare("
+   97:             INSERT INTO pak_orders (
+   98:                 order_code, source,
+   99:                 eu_main_id, bl_order_id, shop_order_id,
+  100:                 delivery_method, courier_priority, status,
+  101:                 user_login, delivery_fullname, delivery_address, delivery_city, delivery_postcode,
+  102:                 phone, email,
+  103:                 payment_done, payment_method, delivery_price,
+  104:                 want_invoice, invoice_company, invoice_fullname, invoice_address, invoice_city, invoice_postcode, invoice_nip,
+  105:                 subiekt_hint, subiekt_doc_id, subiekt_doc_no, notes,
+  106:                 nr_nadania, courier_code, courier_inner_number, bl_package_id,
+  107:                 allegro_parcel_id
+  108:             ) VALUES (
+  109:                 :order_code, :source,
+  110:                 :eu_main_id, :bl_order_id, :shop_order_id,
+  111:                 :delivery_method, :courier_priority, 10,
+  112:                 :user_login, :delivery_fullname, :delivery_address, :delivery_city, :delivery_postcode,
+  113:                 :phone, :email,
+  114:                 :payment_done, :payment_method, :delivery_price,
+  115:                 :want_invoice, :invoice_company, :invoice_fullname, :invoice_address, :invoice_city, :invoice_postcode, :invoice_nip,
+  116:                 :subiekt_hint, :subiekt_doc_id, :subiekt_doc_no, :notes,
+  117:                 :nr_nadania, :courier_code, :courier_inner_number, :bl_package_id,
+  118:                 :allegro_parcel_id
+  119:             )
+  120:             ON DUPLICATE KEY UPDATE
+  121:                 subiekt_doc_id = IF(subiekt_doc_id IS NULL OR subiekt_doc_id=0, VALUES(subiekt_doc_id), subiekt_doc_id),
+  122:                 subiekt_doc_no = IF(subiekt_doc_no IS NULL OR subiekt_doc_no='', VALUES(subiekt_doc_no), subiekt_doc_no),
+  123:                 subiekt_hint   = IF(subiekt_hint IS NULL OR subiekt_hint='', VALUES(subiekt_hint), subiekt_hint),
+  124:                 notes          = IF(notes IS NULL OR notes='', VALUES(notes), notes),
+  125: 
+  126:                 nr_nadania = IF((nr_nadania IS NULL OR nr_nadania='') AND VALUES(nr_nadania) <> '', VALUES(nr_nadania), nr_nadania),
+  127:                 courier_code = IF((courier_code IS NULL OR courier_code='') AND VALUES(courier_code) IS NOT NULL AND VALUES(courier_code) <> '', VALUES(courier_code), courier_code),
+  128:                 courier_inner_number = IF((courier_inner_number IS NULL OR courier_inner_number='') AND VALUES(courier_inner_number) IS NOT NULL AND VALUES(courier_inner_number) <> '', VALUES(courier_inner_number), courier_inner_number),
+  129:                 bl_package_id = IF((bl_package_id IS NULL OR bl_package_id=0) AND VALUES(bl_package_id) IS NOT NULL AND VALUES(bl_package_id) > 0, VALUES(bl_package_id), bl_package_id),
+  130: 
+  131:                 allegro_parcel_id = IF((allegro_parcel_id IS NULL OR allegro_parcel_id='') AND VALUES(allegro_parcel_id) <> '', VALUES(allegro_parcel_id), allegro_parcel_id),
+  132: 
+  133:                 updated_at = NOW()
+  134:         ");
+  135: 
+  136:         $st->execute([
+  137:             ':order_code' => (string)$data['order_code'],
+  138:             ':source' => (string)$data['source'],
+  139:             ':eu_main_id' => $data['eu_main_id'],
+  140:             ':bl_order_id' => $data['bl_order_id'],
+  141:             ':shop_order_id' => (string)$data['shop_order_id'],
+  142: 
+  143:             ':delivery_method' => (string)$data['delivery_method'],
+  144:             ':courier_priority' => (int)$data['courier_priority'],
+  145:             ':user_login' => (string)$data['user_login'],
+  146:             ':delivery_fullname' => (string)$data['delivery_fullname'],
+  147:             ':delivery_address' => (string)$data['delivery_address'],
+  148:             ':delivery_city' => (string)$data['delivery_city'],
+  149:             ':delivery_postcode' => (string)$data['delivery_postcode'],
+  150:             ':phone' => (string)$data['phone'],
+  151:             ':email' => (string)$data['email'],
+  152: 
+  153:             ':payment_done' => $data['payment_done'],
+  154:             ':payment_method' => (string)$data['payment_method'],
+  155:             ':delivery_price' => $data['delivery_price'],
+  156: 
+  157:             ':want_invoice' => (int)$data['want_invoice'],
+  158:             ':invoice_company' => (string)$data['invoice_company'],
+  159:             ':invoice_fullname' => (string)$data['invoice_fullname'],
+  160:             ':invoice_address' => (string)$data['invoice_address'],
+  161:             ':invoice_city' => (string)$data['invoice_city'],
+  162:             ':invoice_postcode' => (string)$data['invoice_postcode'],
+  163:             ':invoice_nip' => (string)$data['invoice_nip'],
+  164: 
+  165:             ':subiekt_hint' => (string)$data['subiekt_hint'],
+  166:             ':subiekt_doc_id' => (int)$data['subiekt_doc_id'],
+  167:             ':subiekt_doc_no' => (string)$data['subiekt_doc_no'],
+  168:             ':notes' => (string)$data['notes'],
+  169: 
+  170:             ':nr_nadania' => (string)($data['nr_nadania'] ?? ''),
+  171:             ':courier_code' => $data['courier_code'] ?? null,
+  172:             ':courier_inner_number' => $data['courier_inner_number'] ?? null,
+  173:             ':bl_package_id' => $data['bl_package_id'] ?? null,
+  174: 
+  175:             ':allegro_parcel_id' => (string)($data['allegro_parcel_id'] ?? ''),
+  176:         ]);
+  177:     }
+  178: 
+  179:     public function syncSourceItems(string $orderCode, string $source, array $items): int
+  180:     {
+  181:         $prefix = ($source === 'U') ? 'EU-%' : 'BL-%';
+  182:         $del = $this->mysql->prepare("DELETE FROM pak_order_items WHERE order_code=:c AND line_key LIKE :p");
+  183:         $del->execute([':c'=>$orderCode, ':p'=>$prefix]);
+  184:         if (!$items) return 0;
+  185: 
+  186:         $ins = $this->mysql->prepare("
+  187:             INSERT INTO pak_order_items (
+  188:                 order_code, line_key, offer_id, sku, name, quantity, unit_price_brutto
+  189:             ) VALUES (
+  190:                 :order_code, :line_key, :offer_id, :sku, :name, :quantity, :unit_price_brutto
+  191:             )
+  192:             ON DUPLICATE KEY UPDATE
+  193:                 offer_id = VALUES(offer_id),
+  194:                 sku = VALUES(sku),
+  195:                 name = VALUES(name),
+  196:                 quantity = VALUES(quantity),
+  197:                 unit_price_brutto = VALUES(unit_price_brutto),
+  198:                 updated_at = NOW()
+  199:         ");
+  200: 
+  201:         $n = 0;
+  202:         foreach ($items as $it) {
+  203:             $ins->execute([
+  204:                 ':order_code'=>$orderCode,
+  205:                 ':line_key'=>(string)$it['line_key'],
+  206:                 ':offer_id'=>(string)$it['offer_id'],
+  207:                 ':sku'=>(string)$it['sku'],
+  208:                 ':name'=>(string)$it['name'],
+  209:                 ':quantity'=>(int)$it['quantity'],
+  210:                 ':unit_price_brutto'=>$it['unit_price_brutto'],
+  211:             ]);
+  212:             $n++;
+  213:         }
+  214:         return $n;
+  215:     }
+  216: 
+  217:     public function syncSubiektItems(string $orderCode, array $items): int
+  218:     {
+  219:         $del = $this->mysql->prepare("DELETE FROM pak_order_items WHERE order_code=:c AND line_key LIKE 'SUB-%'");
+  220:         $del->execute([':c'=>$orderCode]);
+  221:         if (!$items) return 0;
+  222: 
+  223:         $ins = $this->mysql->prepare("
+  224:             INSERT INTO pak_order_items (
+  225:                 order_code, line_key,
+  226:                 subiekt_tow_id, subiekt_symbol,
+  227:                 name, subiekt_desc,
+  228:                 quantity, unit_price_brutto
+  229:             ) VALUES (
+  230:                 :order_code, :line_key,
+  231:                 :subiekt_tow_id, :subiekt_symbol,
+  232:                 :name, :subiekt_desc,
+  233:                 :quantity, :unit_price_brutto
+  234:             )
+  235:             ON DUPLICATE KEY UPDATE
+  236:                 subiekt_tow_id = VALUES(subiekt_tow_id),
+  237:                 subiekt_symbol = VALUES(subiekt_symbol),
+  238:                 name = VALUES(name),
+  239:                 subiekt_desc = VALUES(subiekt_desc),
+  240:                 quantity = VALUES(quantity),
+  241:                 unit_price_brutto = VALUES(unit_price_brutto),
+  242:                 updated_at = NOW()
+  243:         ");
+  244: 
+  245:         $n = 0;
+  246:         foreach ($items as $r) {
+  247:             $obId  = (int)$r['ob_Id'];
+  248:             $towId = (int)$r['ob_TowId'];
+  249:             $qtyF  = (float)$r['ob_Ilosc'];
+  250:             $qty   = (int)round($qtyF);
+  251:             if ($qty < 1 && $qtyF > 0) $qty = 1;
+  252: 
+  253:             $sym   = (string)($r['tw_Symbol'] ?? '');
+  254:             $name  = (string)($r['tw_Nazwa'] ?? '');
+  255:             $desc  = (string)($r['tw_Opis'] ?? '');
+  256:             $desc  = trim((string)preg_replace('/\s+/u', ' ', $desc));
+  257: 
+  258:             $price = ($r['ob_CenaBrutto'] !== null) ? (float)$r['ob_CenaBrutto'] : null;
+  259: 
+  260:             $ins->execute([
+  261:                 ':order_code'=>$orderCode,
+  262:                 ':line_key'=>'SUB-' . $obId,
+  263:                 ':subiekt_tow_id'=>$towId,
+  264:                 ':subiekt_symbol'=>$sym,
+  265:                 ':name'=>($name !== '' ? $name : $sym),
+  266:                 ':subiekt_desc'=>$desc,
+  267:                 ':quantity'=>$qty,
+  268:                 ':unit_price_brutto'=>$price,
+  269:             ]);
+  270:             $n++;
+  271:         }
+  272:         return $n;
+  273:     }
+  274: }
