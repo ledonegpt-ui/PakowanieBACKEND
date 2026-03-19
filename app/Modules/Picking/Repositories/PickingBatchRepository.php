@@ -181,12 +181,16 @@ final class PickingBatchRepository
     public function getOrderCodesInOpenBatches(): array
     {
         $sql = "
-            SELECT DISTINCT pbo.order_code
-            FROM picking_batch_orders pbo
-            INNER JOIN picking_batches pb ON pb.id = pbo.batch_id
-            WHERE pb.status = 'open'
-              AND pbo.status NOT IN ('dropped')
-        ";
+        SELECT DISTINCT pbo.order_code
+        FROM picking_batch_orders pbo
+        INNER JOIN picking_batches pb ON pb.id = pbo.batch_id
+        LEFT JOIN packing_sessions ps
+            ON ps.order_code = pbo.order_code
+            AND ps.status = 'completed'
+        WHERE pb.status IN ('open', 'completed')
+          AND pbo.status NOT IN ('dropped')
+          AND ps.id IS NULL
+    ";
         $st = $this->db->query($sql);
         $rows = $st->fetchAll(PDO::FETCH_COLUMN);
         return is_array($rows) ? $rows : [];
