@@ -268,7 +268,8 @@ final class PackingRepository
     ): void {
         $st = $this->db->prepare("
             UPDATE pak_orders
-            SET pack_ended_at = NOW(),
+            SET status        = 50,
+                pack_ended_at = NOW(),
                 packer        = :packer,
                 station       = :station,
                 carrier_code  = :carrier_code,
@@ -293,7 +294,9 @@ final class PackingRepository
     {
         $st = $this->db->prepare("
             UPDATE pak_orders
-            SET pack_started_at = NOW(), updated_at = NOW()
+            SET status          = 40,
+                pack_started_at = NOW(),
+                updated_at      = NOW()
             WHERE order_code = :order_code
               AND pack_started_at IS NULL
         ");
@@ -334,10 +337,10 @@ final class PackingRepository
                  'pending', NOW(), NOW())
         ");
         $st->execute([
-            ':session_id'  => $sessionId,
-            ':package_no'  => $packageNo,
-            ':provider_id' => $providerId,
-            ':service_code'=> $serviceCode,
+            ':session_id'   => $sessionId,
+            ':package_no'   => $packageNo,
+            ':provider_id'  => $providerId,
+            ':service_code' => $serviceCode,
         ]);
         return (int)$this->db->lastInsertId();
     }

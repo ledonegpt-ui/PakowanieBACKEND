@@ -123,8 +123,8 @@ $routes = [
         (new PanelOrdersController($cfg))->update($params);
     }],
 
-    ['GET', '/api/v1/packing/next', function(array $params) use ($cfg): void {
-        (new PackingController($cfg))->next($params);
+    ['GET', '/api/v1/packing/next', function(array $params): void {
+        (new PackingController())->next($params);
     }],
     ['GET', '/api/v1/workflow/status', function (array $params): void {
         (new WorkflowController())->status($params);
