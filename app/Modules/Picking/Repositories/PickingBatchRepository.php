@@ -181,16 +181,12 @@ final class PickingBatchRepository
     public function getOrderCodesInOpenBatches(): array
     {
         $sql = "
-        SELECT DISTINCT pbo.order_code
-        FROM picking_batch_orders pbo
-        INNER JOIN picking_batches pb ON pb.id = pbo.batch_id
-        LEFT JOIN packing_sessions ps
-            ON ps.order_code = pbo.order_code
-            AND ps.status = 'completed'
-        WHERE pb.status IN ('open', 'completed')
-          AND pbo.status NOT IN ('dropped')
-          AND ps.id IS NULL
-    ";
+            SELECT DISTINCT pbo.order_code
+            FROM picking_batch_orders pbo
+            INNER JOIN picking_batches pb ON pb.id = pbo.batch_id
+            WHERE pb.status = 'open'
+              AND pbo.status NOT IN ('dropped')
+        ";
         $st = $this->db->query($sql);
         $rows = $st->fetchAll(PDO::FETCH_COLUMN);
         return is_array($rows) ? $rows : [];
@@ -1074,6 +1070,42 @@ final class PickingBatchRepository
             $this->db->rollBack();
         }
     }
+    /**
+     * Zwraca ostatni batch usera ze statusem 'completed',
+     * który ma co najmniej jedno zamówienie (picked) bez zakończonej sesji packingu.
+     *
+     * Używane przez WorkflowController do wykrycia sytuacji:
+     * picking zamknięty → packing jeszcze nie ruszył.
+     */
+    public function findCompletedBatchWithPendingPacking(int $userId): ?array
+    {
+        $sql = "
+            SELECT pb.id, pb.batch_code, pb.carrier_key, pb.package_mode,
+                   pb.completed_at
+            FROM picking_batches pb
+            WHERE pb.user_id = :user_id
+              AND pb.status  = 'completed'
+              AND EXISTS (
+                  SELECT 1
+                  FROM picking_batch_orders pbo
+                  WHERE pbo.batch_id = pb.id
+                    AND pbo.status   = 'picked'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM packing_sessions ps
+                        WHERE ps.order_code = pbo.order_code
+                          AND ps.status     = 'completed'
+                    )
+              )
+            ORDER BY pb.completed_at DESC
+            LIMIT 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([':user_id' => $userId]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
     public function abandonBatch(int $batchId): void
     {
         $sql = "

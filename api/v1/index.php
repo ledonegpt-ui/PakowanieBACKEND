@@ -16,6 +16,7 @@ require_once __DIR__ . '/../../app/Modules/Picking/Controllers/PickingOrdersCont
 require_once __DIR__ . '/../../app/Modules/Packing/Controllers/PackingController.php';
 require_once __DIR__ . '/../../app/Modules/Shipping/Controllers/ShippingController.php';
 require_once __DIR__ . '/../../app/Modules/Panel/Controllers/PanelOrdersController.php';
+require_once __DIR__ . '/../../app/Modules/Workflow/Controllers/WorkflowController.php';
 
 $method = Request::method();
 $path   = Request::path();
@@ -122,9 +123,13 @@ $routes = [
         (new PanelOrdersController($cfg))->update($params);
     }],
 
-        ['GET', '/api/v1/packing/next', function(array $params) use ($cfg): void {
+    ['GET', '/api/v1/packing/next', function(array $params) use ($cfg): void {
         (new PackingController($cfg))->next($params);
     }],
+    ['GET', '/api/v1/workflow/status', function (array $params): void {
+        (new WorkflowController())->status($params);
+    }],
+
     ['GET', '/api/v1/shipping/rules', function (array $params): void {
         (new ShippingController())->rules();
     }],
