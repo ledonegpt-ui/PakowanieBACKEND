@@ -223,15 +223,13 @@ final class PickingBatchRepository
             $params = $excludeOrderCodes;
         }
 
-        $params[] = $margin;
-
         $sql = "
             SELECT order_code, delivery_method, carrier_code, courier_code
             FROM pak_orders
             WHERE status = 10
               $excludeClause
             ORDER BY imported_at ASC, order_code ASC
-            LIMIT ?
+            LIMIT " . (int)$margin . "
         ";
 
         $st = $this->db->prepare($sql);
@@ -299,15 +297,13 @@ final class PickingBatchRepository
             $params = $excludeOrderCodes;
         }
 
-        $params[] = $margin;
-
         $sql = "
             SELECT order_code, delivery_method, carrier_code, courier_code, courier_priority, imported_at
             FROM pak_orders
             WHERE status = 10
               $excludeClause
             ORDER BY courier_priority DESC, imported_at ASC, order_code ASC
-            LIMIT ?
+            LIMIT " . (int)$margin . "
         ";
 
         $st = $this->db->prepare($sql);
