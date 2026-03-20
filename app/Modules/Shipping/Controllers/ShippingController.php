@@ -111,6 +111,59 @@ final class ShippingController
                 return;
             }
 
+            // ----------------------------------------------------------------
+            // TRYB DEBUG — ustawić LABEL_DEBUG_MODE=1 w .env
+            // Nie wywołuje żadnego adaptera ani drukarki.
+            // Zapisuje do bazy fałszywą etykietę i zwraca sukces.
+            // ----------------------------------------------------------------
+            $debugMode = (bool)(int)($_ENV['LABEL_DEBUG_MODE'] ?? getenv('LABEL_DEBUG_MODE') ?? 0);
+
+            if ($debugMode) {
+                $fakeTracking = 'DEBUG-' . strtoupper($labelProvider) . '-' . date('ymdHis') . '-' . substr($orderCode, -6);
+                $fakeToken    = 'debug_' . md5($orderCode . time());
+
+                $repo->updatePackageLabel(
+                    (int)$package['id'],
+                    $fakeTracking,
+                    null,
+                    'ok'
+                );
+
+                $repo->createLabel(
+                    (int)$package['id'],
+                    'debug',
+                    'ok',
+                    null,
+                    $fakeToken,
+                    json_encode(['debug' => true, 'provider' => $labelProvider], JSON_UNESCAPED_UNICODE)
+                );
+
+                $repo->logEvent(
+                    $sessionId, 'label_generated',
+                    '[DEBUG] Fake label for ' . $labelProvider,
+                    [
+                        'order_code'      => $orderCode,
+                        'label_provider'  => $labelProvider,
+                        'tracking_number' => $fakeTracking,
+                        'debug_mode'      => true,
+                        'user_id'         => (int)$currentSession['user_id'],
+                    ],
+                    (int)$currentSession['user_id']
+                );
+
+                ApiResponse::ok([
+                    'shipping' => [
+                        'order_code'      => $orderCode,
+                        'tracking_number' => $fakeTracking,
+                        'label_format'    => 'debug',
+                        'label_status'    => 'ok',
+                        'file_token'      => $fakeToken,
+                        'source'          => 'debug',
+                    ]
+                ]);
+                return;
+            }
+
             // pobierz config providera
             $provider    = $repo->findProviderByCode($this->resolveProviderCode($labelProvider));
             $providerCfg = $provider ? json_decode((string)($provider['config_json'] ?? '{}'), true) : [];
