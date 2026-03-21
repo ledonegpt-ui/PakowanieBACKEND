@@ -631,15 +631,18 @@ final class PickingBatchRepository
         string $productName,
         ?string $uom,
         bool $isUnmapped,
-        float $expectedQty
+        float $expectedQty,
+        string $status = 'pending'
     ): int {
+        $pickedQty = $status === 'picked' ? $expectedQty : 0;
+
         $sql = "
         INSERT INTO picking_order_items
             (batch_order_id, pak_order_item_id, subiekt_tow_id, subiekt_symbol, subiekt_desc, source_name, product_code, product_name,
              uom, is_unmapped, expected_qty, picked_qty, status, created_at, updated_at)
         VALUES
             (:batch_order_id, :pak_order_item_id, :subiekt_tow_id, :subiekt_symbol, :subiekt_desc, :source_name, :product_code, :product_name,
-             :uom, :is_unmapped, :expected_qty, 0, 'pending', NOW(), NOW())
+             :uom, :is_unmapped, :expected_qty, :picked_qty, :status, NOW(), NOW())
         ON DUPLICATE KEY UPDATE
             subiekt_tow_id = VALUES(subiekt_tow_id),
             subiekt_symbol = VALUES(subiekt_symbol),
@@ -665,6 +668,8 @@ final class PickingBatchRepository
             ':uom'               => $uom,
             ':is_unmapped'       => $isUnmapped ? 1 : 0,
             ':expected_qty'      => $expectedQty,
+            ':picked_qty'        => $pickedQty,
+            ':status'            => $status,
         ]);
         return (int)$this->db->lastInsertId();
     }

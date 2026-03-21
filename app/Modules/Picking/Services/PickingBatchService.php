@@ -676,6 +676,11 @@ final class PickingBatchService
 
     private function insertOrderItems(int $batchOrderId, string $orderCode): void
     {
+        // Lista subiekt_tow_id które są automatycznie oznaczane jako zebrane
+        // (usługi, transporty itp. — nie ma ich co fizycznie zbierać z półki)
+        // Konfiguracja w .env: PICKING_AUTOPICK_TOW_IDS=1295,999,123
+        $autoPickIds = $this->getAutoPickTowIds();
+
         $items = $this->repo->getOrderItems($orderCode);
         foreach ($items as $item) {
             $subiektTowId = isset($item['subiekt_tow_id']) ? (int)$item['subiekt_tow_id'] : 0;
@@ -706,6 +711,11 @@ final class PickingBatchService
                 $productName = $productCode;
             }
 
+            // Auto-pick: usługi i inne pozycje których nie zbiera się fizycznie
+            $autoStatus = ($subiektTowId !== null && in_array($subiektTowId, $autoPickIds, true))
+                ? 'picked'
+                : 'pending';
+
             $this->repo->insertPickingOrderItem(
                 $batchOrderId,
                 (int)$item['item_id'],
@@ -717,9 +727,33 @@ final class PickingBatchService
                 $productName,
                 $uom,
                 $isUnmapped,
-                (float)($item['quantity'] ?? 1)
+                (float)($item['quantity'] ?? 1),
+                $autoStatus
             );
         }
+    }
+
+    /**
+     * Zwraca listę subiekt_tow_id które mają być automatycznie oznaczone
+     * jako 'picked' przy tworzeniu batcha pickingu.
+     * Konfiguracja przez zmienną środowiskową PICKING_AUTOPICK_TOW_IDS
+     * np: PICKING_AUTOPICK_TOW_IDS=1295,999
+     *
+     * @return int[]
+     */
+    private function getAutoPickTowIds(): array
+    {
+        $raw = (string)(getenv('PICKING_AUTOPICK_TOW_IDS') ?: ($_ENV['PICKING_AUTOPICK_TOW_IDS'] ?? ''));
+        if ($raw === '') return [];
+
+        $ids = [];
+        foreach (explode(',', $raw) as $part) {
+            $part = trim($part);
+            if ($part !== '' && ctype_digit($part)) {
+                $ids[] = (int)$part;
+            }
+        }
+        return $ids;
     }
 
     private function getBatchDetail(int $batchId): array

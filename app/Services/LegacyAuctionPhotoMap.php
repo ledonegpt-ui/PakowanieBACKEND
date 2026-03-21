@@ -47,6 +47,55 @@ final class LegacyAuctionPhotoMap
         return $out;
     }
 
+    /**
+     * Zwraca mapę zdjęć dla zestawów/ofert po nr_aukcji:
+     * key = offer_id (nr_aukcji) => image_url
+     *
+     * Używane gdy pozycja ma offer_id — zdjęcie zestawu zamiast zdjęcia produktu.
+     *
+     * @param array<int,string> $offerIds
+     * @return array<string,string>
+     */
+    public function buildImageMapForOfferIds(array $offerIds): array
+    {
+        if (empty($offerIds)) return [];
+
+        $placeholders = implode(',', array_fill(0, count($offerIds), '?'));
+
+        $sql = "
+            SELECT
+                TRIM(nr_aukcji) AS offer_id,
+                MIN(TRIM(fotka_auckji)) AS image_url
+            FROM allegro_aukcje
+            WHERE nr_aukcji IN ($placeholders)
+              AND fotka_auckji IS NOT NULL
+              AND TRIM(fotka_auckji) <> ''
+            GROUP BY TRIM(nr_aukcji)
+        ";
+
+        try {
+            $st = $this->mysql2->prepare($sql);
+            $st->execute(array_values($offerIds));
+            $rows = $st->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        } catch (\Throwable $e) {
+            if (is_callable($this->log)) {
+                call_user_func($this->log, "LEGACY_IMG: buildImageMapForOfferIds error: " . $e->getMessage());
+            }
+            return [];
+        }
+
+        $out = [];
+        foreach ($rows as $r) {
+            $offerId = trim((string)($r['offer_id'] ?? ''));
+            $url     = trim((string)($r['image_url'] ?? ''));
+            if ($offerId === '' || $url === '') continue;
+            if (strlen($url) > 500) $url = substr($url, 0, 500);
+            $out[$offerId] = $url;
+        }
+
+        return $out;
+    }
+
     private function ensureLoaded(): void
     {
         if ($this->map !== null) return;

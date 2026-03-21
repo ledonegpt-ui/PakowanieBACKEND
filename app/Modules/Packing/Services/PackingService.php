@@ -326,21 +326,47 @@ final class PackingService
             $mysql2   = \Db::mysql2($this->cfg);
             $photoMap = new \LegacyAuctionPhotoMap($mysql2);
 
-            $rows = [];
+            // --- 1. Zbierz unikalne offer_id i subiekt rows ---
+            $offerIds    = [];
+            $subiektRows = [];
+
             foreach ($items as $item) {
-                $rows[] = [
-                    'ob_TowId'  => $item['subiekt_tow_id'],
-                    'tw_Symbol' => $item['subiekt_symbol'] ?? '',
-                ];
+                $offerId = isset($item['offer_id']) ? trim((string)$item['offer_id']) : '';
+                if ($offerId !== '') {
+                    $offerIds[$offerId] = $offerId;
+                } else {
+                    $subiektRows[] = [
+                        'ob_TowId'  => $item['subiekt_tow_id'],
+                        'tw_Symbol' => $item['subiekt_symbol'] ?? '',
+                    ];
+                }
             }
 
-            $imageMap = $photoMap->buildImageMapForSubiektRows($rows);
+            // --- 2. Pobierz mapy zdjęć ---
+            // Zdjęcia zestawów po offer_id (nr_aukcji) — jeden URL na całą grupę
+            $offerImageMap = !empty($offerIds)
+                ? $photoMap->buildImageMapForOfferIds(array_values($offerIds))
+                : [];
 
+            // Zdjęcia pojedynczych produktów po subiekt_tow_id|symbol
+            $subiektImageMap = !empty($subiektRows)
+                ? $photoMap->buildImageMapForSubiektRows($subiektRows)
+                : [];
+
+            // --- 3. Przypisz zdjęcia do pozycji ---
             foreach ($items as &$item) {
-                $towId  = (string)($item['subiekt_tow_id'] ?? '');
-                $symbol = strtoupper(trim((string)($item['subiekt_symbol'] ?? '')));
-                $key    = $towId . '|' . $symbol;
-                $item['image_url'] = $imageMap[$key] ?? null;
+                $offerId = isset($item['offer_id']) ? trim((string)$item['offer_id']) : '';
+
+                if ($offerId !== '') {
+                    // Pozycja należy do zestawu — zdjęcie zestawu z offer_id
+                    $item['image_url'] = $offerImageMap[$offerId] ?? null;
+                } else {
+                    // Pojedyncza pozycja — zdjęcie produktu
+                    $towId  = (string)($item['subiekt_tow_id'] ?? '');
+                    $symbol = strtoupper(trim((string)($item['subiekt_symbol'] ?? '')));
+                    $key    = $towId . '|' . $symbol;
+                    $item['image_url'] = $subiektImageMap[$key] ?? null;
+                }
             }
             unset($item);
 
