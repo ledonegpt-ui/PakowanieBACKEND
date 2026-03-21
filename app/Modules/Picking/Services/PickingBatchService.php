@@ -711,10 +711,11 @@ final class PickingBatchService
                 $productName = $productCode;
             }
 
-            // Auto-pick: usługi i inne pozycje których nie zbiera się fizycznie
-            $autoStatus = ($subiektTowId !== null && in_array($subiektTowId, $autoPickIds, true))
-                ? 'picked'
-                : 'pending';
+            // Pomiń pozycje których nie zbiera się fizycznie (usługi, transport itp.)
+            // Są widoczne w packingu (czytanym z pak_order_items) ale nie w pickingu
+            if ($subiektTowId !== null && in_array($subiektTowId, $autoPickIds, true)) {
+                continue;
+            }
 
             $this->repo->insertPickingOrderItem(
                 $batchOrderId,
@@ -728,7 +729,7 @@ final class PickingBatchService
                 $uom,
                 $isUnmapped,
                 (float)($item['quantity'] ?? 1),
-                $autoStatus
+                'pending'
             );
         }
     }
