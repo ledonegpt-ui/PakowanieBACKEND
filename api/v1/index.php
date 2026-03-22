@@ -17,6 +17,7 @@ require_once __DIR__ . '/../../app/Modules/Packing/Controllers/PackingController
 require_once __DIR__ . '/../../app/Modules/Shipping/Controllers/ShippingController.php';
 require_once __DIR__ . '/../../app/Modules/Panel/Controllers/PanelOrdersController.php';
 require_once __DIR__ . '/../../app/Modules/Workflow/Controllers/WorkflowController.php';
+require_once __DIR__ . '/../../app/Modules/Admin/Controllers/AdminController.php';
 
 $method = Request::method();
 $path   = Request::path();
@@ -147,6 +148,26 @@ $routes = [
     }],
     ['POST', '/api/v1/shipping/orders/{orderId}/reprint', function (array $params): void {
         (new ShippingController())->reprint($params);
+    }],
+
+    // ── Admin panel ──────────────────────────────────────────────────────────
+    ['GET', '/api/v1/admin/batches', function (array $params) use ($cfg): void {
+        (new AdminController($cfg))->batches();
+    }],
+    ['GET', '/api/v1/admin/stats/overview', function (array $params) use ($cfg): void {
+        (new AdminController($cfg))->statsOverview();
+    }],
+    ['GET', '/api/v1/admin/stats/daily', function (array $params) use ($cfg): void {
+        (new AdminController($cfg))->statsDaily();
+    }],
+    ['GET', '/api/v1/admin/stats/packers', function (array $params) use ($cfg): void {
+        (new AdminController($cfg))->statsPackers();
+    }],
+    ['GET', '/api/v1/admin/stats/carriers', function (array $params) use ($cfg): void {
+        (new AdminController($cfg))->statsCarriers();
+    }],
+    ['GET', '/api/v1/admin/stats/users/{userId}/daily', function (array $params) use ($cfg): void {
+        (new AdminController($cfg))->statsUserDaily($params);
     }],
 ];
 
