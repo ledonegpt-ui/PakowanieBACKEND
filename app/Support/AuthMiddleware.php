@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 final class AuthMiddleware
@@ -9,10 +10,26 @@ final class AuthMiddleware
         'POST /api/v1/auth/login',
     ];
 
+    /** @var array */
+    private static $publicRoutePatterns = [
+        ['GET', '#^/api/v1/screens/[^/]+/current$#'],
+        ['GET', '#^/api/v1/screens/[^/]+/stream$#'],
+    ];
+
     public static function handle(string $method, string $path, array $cfg): ?array
     {
         foreach (self::$publicRoutes as $public) {
             if (($method . ' ' . $path) === $public) {
+                return null;
+            }
+        }
+
+        foreach (self::$publicRoutePatterns as $publicPattern) {
+            if ($method !== $publicPattern[0]) {
+                continue;
+            }
+
+            if (preg_match($publicPattern[1], $path)) {
                 return null;
             }
         }

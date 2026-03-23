@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="pl">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Monitor pakowania</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:             #05080f;
+            --surface:        #0b1220;
+            --surface2:       #101b2e;
+            --surface3:       #162033;
+            --accent:         #3d8ef5;
+            --accent-dim:     rgba(61,142,245,0.10);
+            --accent-glow:    rgba(61,142,245,0.20);
+            --text:           #e6efff;
+            --text-mid:       #7ea8e0;
+            --text-dim:       #3d5a82;
+            --danger-bg:      rgba(180,28,28,0.15);
+            --danger-border:  rgba(220,60,60,0.4);
+            --danger-text:    #ffb3b3;
+            --border:         rgba(61,142,245,0.13);
+            --border-strong:  rgba(61,142,245,0.26);
+            --mono: 'JetBrains Mono', ui-monospace, monospace;
+            --display: 'Syne', sans-serif;
+        }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { width:100%; height:100%; background:var(--bg); color:var(--text); font-family:var(--mono); overflow:hidden; }
+        body { min-height:100vh; }
+        button, input { font:inherit; }
+        .hidden { display:none !important; }
+
+        /* SCREENS */
+        .screen { width:100%; min-height:100vh; display:flex; flex-direction:column; background:var(--bg); }
+
+        /* STATION SELECT */
+        .select-wrap { flex:1; display:grid; place-items:center; padding:24px; background:radial-gradient(ellipse 70% 60% at 50% 40%, rgba(61,142,245,0.07) 0%, transparent 70%); }
+        .select-card { width:min(620px,100%); background:var(--surface); border:1px solid var(--border-strong); border-radius:20px; padding:36px 32px; box-shadow:0 0 60px rgba(61,142,245,0.08), 0 8px 32px rgba(0,0,0,0.6); }
+        .select-card h1 { font-family:var(--display); font-size:clamp(26px,4vw,44px); font-weight:800; color:var(--text); letter-spacing:-0.5px; margin-bottom:8px; }
+        .muted { color:var(--text-mid); font-size:13px; }
+        .station-form { display:flex; gap:10px; flex-wrap:wrap; margin-top:24px; }
+        .station-form input, .admin-panel input { flex:1 1 200px; min-height:52px; padding:0 18px; background:var(--surface2); color:var(--text); font-size:20px; font-family:var(--mono); border:1px solid var(--border-strong); border-radius:12px; outline:none; transition:border-color .2s, box-shadow .2s; }
+        .station-form input:focus, .admin-panel input:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(61,142,245,0.18); }
+        .station-form button, .admin-actions button { min-height:52px; padding:0 24px; border-radius:12px; border:2px solid var(--accent); background:transparent; color:var(--accent); font-size:14px; font-weight:700; font-family:var(--mono); cursor:pointer; letter-spacing:0.5px; transition:background .15s, color .15s; }
+        .station-form button:hover, .admin-actions button:hover { background:var(--accent); color:#fff; }
+
+        /* META BAR */
+        .monitor-meta { display:flex; flex-wrap:wrap; gap:0; align-items:stretch; background:var(--surface); border-bottom:1px solid var(--border-strong); font-size:11px; font-family:var(--mono); color:var(--text-dim); letter-spacing:0.5px; }
+        .meta-chunk { display:flex; align-items:center; padding:9px 18px; border-right:1px solid var(--border); gap:7px; white-space:nowrap; }
+        .meta-chunk:last-child { border-right:none; }
+        .meta-label { color:var(--text-dim); }
+        .meta-value { color:var(--text); font-weight:700; }
+        .meta-dot { width:6px; height:6px; border-radius:50%; background:var(--text-dim); flex-shrink:0; }
+        .meta-dot.online  { background:#3dfa7e; box-shadow:0 0 6px #3dfa7e; animation:pdot 2.4s ease-in-out infinite; }
+        .meta-dot.offline { background:#fa3d3d; }
+        .meta-dot.connecting { background:#f0b429; animation:pdot 1s ease-in-out infinite; }
+        @keyframes pdot { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+        /* IDLE */
+        .idle-wrap { flex:1; display:grid; place-items:center; padding:24px; text-align:center; background:radial-gradient(ellipse 60% 50% at 50% 50%, rgba(61,142,245,0.05) 0%, transparent 70%); }
+        .idle-inner { display:flex; flex-direction:column; align-items:center; gap:14px; }
+        .idle-icon { font-size:52px; opacity:.22; animation:ifloat 3s ease-in-out infinite; }
+        @keyframes ifloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
+        .idle-title { font-family:var(--display); font-weight:800; font-size:clamp(36px,5.5vw,80px); line-height:1.05; color:var(--text); letter-spacing:-1px; }
+        .idle-sub { font-size:12px; color:var(--text-dim); letter-spacing:2px; }
+
+        /* BANNER */
+        .banner { margin:12px 16px; padding:12px 18px; border-radius:12px; background:var(--danger-bg); border:1px solid var(--danger-border); color:var(--danger-text); font-size:13px; letter-spacing:0.3px; }
+
+        /* PACKING */
+        .packing-shell { display:flex; flex-direction:column; min-height:0; flex:1; }
+        .packing-topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 20px; background:var(--surface); border-bottom:1px solid var(--border-strong); }
+        .packing-title { display:flex; flex-direction:column; min-width:0; }
+        .packing-order-code { font-family:var(--display); font-weight:800; font-size:clamp(18px,2.4vw,28px); color:var(--text); letter-spacing:-0.3px; line-height:1.1; word-break:break-word; }
+        .packing-delivery-method { margin-top:3px; font-size:12px; color:var(--text-mid); letter-spacing:0.3px; word-break:break-word; }
+        .packing-topbar-right { font-size:11px; color:var(--text-mid); text-align:right; letter-spacing:0.8px; font-weight:700; flex-shrink:0; }
+
+        /* CONTENT */
+        .packing-content { flex:1; min-height:0; overflow-y:auto; background:var(--bg); scrollbar-width:thin; scrollbar-color:var(--surface3) transparent; }
+        .packing-content::-webkit-scrollbar { width:4px; }
+        .packing-content::-webkit-scrollbar-thumb { background:var(--surface3); border-radius:4px; }
+
+        /* ITEM ROW — single item */
+        .item-row { display:grid; grid-template-columns:140px 1fr auto; align-items:stretch; border-bottom:1px solid var(--border); background:var(--bg); transition:background .1s; }
+        .item-row:hover { background:rgba(220,38,38,0.04); }
+
+        /* ITEM ROW — bundle (same offer_id): image left, list of entries right */
+        .item-row--bundle { display:flex; align-items:stretch; border-bottom:1px solid var(--border); background:var(--bg); }
+        .item-row--bundle:hover { background:rgba(220,38,38,0.04); }
+
+        /* image column (shared for bundle, single for solo) */
+        .item-img-col { display:flex; align-items:center; justify-content:center; padding:16px 12px 16px 16px; flex-shrink:0; width:140px; }
+        .item-img { width:108px; height:108px; object-fit:contain; border-radius:10px; background:var(--surface2); border:1px solid var(--border); display:block; }
+        .item-img-placeholder { width:108px; height:108px; border-radius:10px; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:10px; color:var(--text-dim); text-align:center; line-height:1.3; }
+
+        /* bundle: right side = stacked entries */
+        .bundle-list { flex:1; display:flex; flex-direction:column; border-left:1px solid var(--border); min-width:0; }
+        .bundle-entry { display:flex; align-items:stretch; border-bottom:1px solid var(--border); }
+        .bundle-entry:last-child { border-bottom:none; }
+
+        /* offer badge shown once above bundle list */
+        .bundle-offer-bar { padding:6px 16px; background:var(--surface2); border-bottom:1px solid var(--border); }
+        .bundle-offer-text { font-size:10px; color:var(--text-dim); letter-spacing:0.8px; font-weight:600; }
+        .bundle-badge { display:inline-block; margin-left:8px; padding:1px 7px; border-radius:20px; background:var(--accent-dim); border:1px solid var(--border-strong); color:var(--accent); font-size:9px; font-weight:700; letter-spacing:0.8px; }
+
+        /* info col — used both in single row and inside bundle-entry */
+        .item-info-col { display:flex; flex-direction:column; justify-content:center; padding:14px 16px 14px 14px; min-width:0; flex:1; border-left:1px solid var(--border); }
+        .item-row .item-info-col { border-left:1px solid var(--border); }
+        .bundle-entry .item-info-col { border-left:none; }
+        .item-offer { font-size:10px; color:var(--text-dim); letter-spacing:0.8px; margin-bottom:4px; font-weight:600; }
+        .item-name { font-family:var(--display); font-weight:700; font-size:clamp(15px,1.9vw,21px); color:var(--text); line-height:1.25; word-break:break-word; }
+        .item-desc { margin-top:4px; font-size:12px; color:var(--text-mid); line-height:1.35; word-break:break-word; }
+
+        /* qty col — identical everywhere */
+        .item-qty-col { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:14px 24px; min-width:100px; border-left:1px solid var(--border); background:rgba(220,38,38,0.08); flex-shrink:0; }
+        .item-qty-value { font-family:Arial, Helvetica, sans-serif; font-weight:900; font-size:clamp(44px,5.2vw,68px); line-height:1; color:#e83232; }
+        .item-qty-uom { margin-top:4px; font-size:11px; color:#a05050; letter-spacing:0.8px; font-weight:700; font-family:Arial, Helvetica, sans-serif; }
+
+        /* empty */
+        .items-empty { padding:60px 24px; text-align:center; color:var(--text-dim); font-size:15px; }
+
+        /* ADMIN */
+        .admin-hotspot { position:fixed; right:8px; bottom:8px; width:26px; height:26px; opacity:0.03; border:0; border-radius:50%; background:white; z-index:20; cursor:pointer; }
+        .admin-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.7); display:grid; place-items:center; padding:20px; z-index:30; backdrop-filter:blur(4px); }
+        .admin-panel { width:min(580px,calc(100vw - 32px)); background:var(--surface); border:1px solid var(--border-strong); border-radius:20px; padding:28px; box-shadow:0 32px 80px rgba(0,0,0,0.7); }
+        .admin-panel h2 { font-family:var(--display); font-size:26px; font-weight:800; color:var(--text); margin-bottom:8px; }
+        .admin-actions { margin-top:16px; display:flex; gap:10px; flex-wrap:wrap; }
+
+        @media (max-width:640px) {
+            .item-row { grid-template-columns:100px 1fr auto; }
+            .item-row--bundle { flex-direction:row; }
+            .item-img-col { width:100px; padding:10px 8px 10px 12px; }
+            .item-img, .item-img-placeholder { width:78px; height:78px; }
+            .item-qty-col { padding:10px 14px; min-width:72px; }
+            .item-qty-value { font-size:30px; }
+            .packing-order-code { font-size:17px; }
+            .monitor-meta { font-size:10px; }
+            .meta-chunk { padding:8px 12px; }
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+
+    <!-- STATION SELECT -->
+    <section id="stationSelectView" class="screen">
+        <div class="select-wrap">
+            <div class="select-card">
+                <h1>Monitor pakowania</h1>
+                <p class="muted">Podaj numer stanowiska aby rozpocząć.</p>
+                <form id="stationForm" class="station-form">
+                    <input id="stationInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Nr stanowiska, np. 11" aria-label="Numer stanowiska" />
+                    <button type="submit">START</button>
+                </form>
+            </div>
+        </div>
+    </section>
+
+    <!-- IDLE -->
+    <section id="idleView" class="screen hidden">
+        <div class="monitor-meta">
+            <div class="meta-chunk"><span class="meta-label">STANOWISKO</span><span class="meta-value" id="idleStationCode">—</span></div>
+            <div class="meta-chunk"><span class="meta-dot" id="idleDot"></span><span class="meta-value" id="idleConnectionText">—</span></div>
+            <div class="meta-chunk"><span class="meta-label">SYNC</span><span class="meta-value" id="idleUpdatedAt">—</span></div>
+        </div>
+        <div class="idle-wrap">
+            <div class="idle-inner">
+                <div class="idle-icon">📦</div>
+                <div class="idle-title" id="idleMessage">CZEKAM NA<br>ZEBRANIE TOWARU</div>
+                <div class="idle-sub">GOTOWY DO PRACY</div>
+            </div>
+        </div>
+        <div id="idleOfflineBanner" class="banner hidden">⚠ Brak połączenia z serwerem</div>
+    </section>
+
+    <!-- PACKING -->
+    <section id="packingView" class="screen hidden">
+        <div class="monitor-meta">
+            <div class="meta-chunk"><span class="meta-label">STANOWISKO</span><span class="meta-value" id="packingStationCode">—</span></div>
+            <div class="meta-chunk"><span class="meta-dot" id="packingDot"></span><span class="meta-value" id="packingConnectionText">—</span></div>
+            <div class="meta-chunk"><span class="meta-label">SYNC</span><span class="meta-value" id="packingUpdatedAt">—</span></div>
+        </div>
+        <div class="packing-shell">
+            <header class="packing-topbar">
+                <div class="packing-title">
+                    <div id="packingOrderCode" class="packing-order-code">—</div>
+                    <div id="packingDeliveryMethod" class="packing-delivery-method">—</div>
+                </div>
+                <div class="packing-topbar-right" id="packingTopbarRight"></div>
+            </header>
+            <main class="packing-content" id="packingContent"></main>
+        </div>
+        <div id="packingOfflineBanner" class="banner hidden">⚠ Brak połączenia z serwerem</div>
+    </section>
+</div>
+
+<button id="adminHotspot" class="admin-hotspot" title="Admin"></button>
+
+<div id="adminOverlay" class="admin-overlay hidden">
+    <div class="admin-panel">
+        <h2>Zmiana stanowiska</h2>
+        <p class="muted">Ctrl + Alt + S</p>
+        <input id="adminStationInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Numer stanowiska" aria-label="Nowy numer stanowiska" style="margin-top:16px;width:100%;" />
+        <div class="admin-actions">
+            <button type="button" id="adminSaveBtn">Zapisz</button>
+            <button type="button" id="adminClearBtn">Wyczyść</button>
+            <button type="button" id="adminCloseBtn">Zamknij</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    (function () {
+        var CONFIG = { storageKey: 'ledone.monitor.stationCode', offlineDelayMs: 4000 };
+        var state = { stationCode: localStorage.getItem(CONFIG.storageKey)||'', current:null, connection:'connecting', eventSource:null, isFetching:false, queuedReload:false, offlineTimer:null };
+
+        var el = {
+            stationSelectView:     document.getElementById('stationSelectView'),
+            idleView:              document.getElementById('idleView'),
+            packingView:           document.getElementById('packingView'),
+            stationForm:           document.getElementById('stationForm'),
+            stationInput:          document.getElementById('stationInput'),
+            idleStationCode:       document.getElementById('idleStationCode'),
+            idleConnectionText:    document.getElementById('idleConnectionText'),
+            idleDot:               document.getElementById('idleDot'),
+            idleUpdatedAt:         document.getElementById('idleUpdatedAt'),
+            idleMessage:           document.getElementById('idleMessage'),
+            idleOfflineBanner:     document.getElementById('idleOfflineBanner'),
+            packingStationCode:    document.getElementById('packingStationCode'),
+            packingConnectionText: document.getElementById('packingConnectionText'),
+            packingDot:            document.getElementById('packingDot'),
+            packingUpdatedAt:      document.getElementById('packingUpdatedAt'),
+            packingOfflineBanner:  document.getElementById('packingOfflineBanner'),
+            packingOrderCode:      document.getElementById('packingOrderCode'),
+            packingDeliveryMethod: document.getElementById('packingDeliveryMethod'),
+            packingTopbarRight:    document.getElementById('packingTopbarRight'),
+            packingContent:        document.getElementById('packingContent'),
+            adminHotspot:          document.getElementById('adminHotspot'),
+            adminOverlay:          document.getElementById('adminOverlay'),
+            adminStationInput:     document.getElementById('adminStationInput'),
+            adminSaveBtn:          document.getElementById('adminSaveBtn'),
+            adminClearBtn:         document.getElementById('adminClearBtn'),
+            adminCloseBtn:         document.getElementById('adminCloseBtn')
+        };
+
+        function currentUrl(c) { return '/api/v1/screens/'+encodeURIComponent(c)+'/current'; }
+        function streamUrl(c)   { return '/api/v1/screens/'+encodeURIComponent(c)+'/stream'; }
+
+        function esc(v) { return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'); }
+        function norm(v) { return String(v==null?'':v).trim(); }
+
+        function setStationCode(v) { state.stationCode=String(v||'').trim(); localStorage.setItem(CONFIG.storageKey,state.stationCode); }
+        function clearStationCode() { state.stationCode=''; localStorage.removeItem(CONFIG.storageKey); }
+
+        function connDotClass() { return state.connection==='online'?'online':state.connection==='offline'?'offline':'connecting'; }
+        function connLabel()    { return state.connection==='online'?'POŁĄCZONO':state.connection==='offline'?'BRAK POŁĄCZENIA':'ŁĄCZENIE…'; }
+
+        function clearOfflineTimer() { if(state.offlineTimer){clearTimeout(state.offlineTimer);state.offlineTimer=null;} }
+        function setConnection(s) { if(state.connection===s)return; state.connection=s; renderMeta(); renderOfflineBanners(); }
+        function setConnectingSoft() { if(state.connection==='online'||state.connection==='offline')return; setConnection('connecting'); }
+        function markOfflineSoon() { if(state.connection==='offline'||state.offlineTimer)return; state.offlineTimer=setTimeout(function(){state.offlineTimer=null;setConnection('offline');},CONFIG.offlineDelayMs); }
+        function markOnline() { clearOfflineTimer(); setConnection('online'); }
+
+        function show(v) {
+            el.stationSelectView.classList.toggle('hidden', v!=='station-select');
+            el.idleView.classList.toggle('hidden',          v!=='idle');
+            el.packingView.classList.toggle('hidden',       v!=='packing');
+        }
+
+        function applyDot(dotEl, cls) { dotEl.className='meta-dot '+cls; }
+
+        function renderMeta() {
+            var upd=state.current&&state.current.updated_at?state.current.updated_at:'—';
+            var dc=connDotClass(), lbl=connLabel();
+            el.idleStationCode.textContent=state.stationCode||'—';
+            el.packingStationCode.textContent=state.stationCode||'—';
+            el.idleConnectionText.textContent=lbl;
+            el.packingConnectionText.textContent=lbl;
+            el.idleUpdatedAt.textContent=upd;
+            el.packingUpdatedAt.textContent=upd;
+            applyDot(el.idleDot,dc);
+            applyDot(el.packingDot,dc);
+        }
+
+        function renderOfflineBanners() {
+            var off=state.connection==='offline';
+            el.idleOfflineBanner.classList.toggle('hidden',!off);
+            el.packingOfflineBanner.classList.toggle('hidden',!off);
+        }
+
+        function resolveImg(url) { if(!url)return''; try{return new URL(url,window.location.origin).href;}catch(e){return'';} }
+
+        function getPacking(cur)      { return cur&&cur.packing?cur.packing:{}; }
+        function getOrderCode(p)      { var o=p.order||{},s=p.session||{}; return o.order_code||s.order_code||'—'; }
+        function getDeliveryMethod(p) { return norm((p.order||{}).delivery_method); }
+        function getCarrierCode(p)    { var o=p.order||{},s=p.shipping||{}; return norm(o.carrier_code||s.carrier_code); }
+        function getItems(p)          { return Array.isArray(p.items)?p.items:[]; }
+        function getOfferId(item)     { return norm(item.offer_id||item.offerId); }
+        function getName(item)        { return norm(item.source_name||item.sourceName)||norm(item.product_name||item.productName)||norm(item.product_code||item.productCode)||'?'; }
+        function getDesc(item)        { return norm(item.subiekt_desc||item.subiektDesc); }
+        function getUom(item)         { return norm(item.uom)||'szt'; }
+        function getImg(item)         { return resolveImg(item.image_url||item.imageUrl||item.image||''); }
+        function getQtyRaw(item)      { return item.expected_qty!=null?item.expected_qty:item.quantity!=null?item.quantity:item.qty!=null?item.qty:1; }
+        function fmtQty(v)            { var n=Number(v); return isNaN(n)?'1':String(Math.trunc(n)); }
+
+        function groupItems(items) {
+            var map={},keys=[];
+            for(var i=0;i<items.length;i++){
+                var item=items[i]||{};
+                var oid=getOfferId(item);
+                var id=item.id!=null?String(item.id):String(i);
+                var key=oid?('offer:'+oid):('item:'+id);
+                if(!map[key]){map[key]={offerId:oid||null,items:[]};keys.push(key);}
+                map[key].items.push(item);
+            }
+            return keys.map(function(k){return map[k];});
+        }
+
+        function renderIdle() {
+            el.idleMessage.textContent=state.current&&state.current.message?state.current.message:'CZEKAM NA ZEBRANIE TOWARU';
+            show('idle');
+        }
+
+        function renderPacking() {
+            var p=getPacking(state.current);
+            el.packingOrderCode.textContent=getOrderCode(p);
+            el.packingDeliveryMethod.textContent=getDeliveryMethod(p);
+            el.packingTopbarRight.textContent=getCarrierCode(p);
+
+            var items=getItems(p);
+            var groups=groupItems(items);
+            var html='';
+
+            if(!groups.length) {
+                html='<div class="items-empty">Brak pozycji do wyświetlenia</div>';
+            } else {
+                for(var i=0;i<groups.length;i++){
+                    var group=groups[i];
+                    var isBundle=group.items.length>1;
+                    var first=group.items[0]||{};
+                    var imgUrl=getImg(first);
+
+                    var imgHtml = imgUrl
+                        ? '<img class="item-img" src="'+esc(imgUrl)+'" alt="" loading="lazy" decoding="async">'
+                        : '<div class="item-img-placeholder">BRAK<br>ZDJĘCIA</div>';
+
+                    if(!isBundle) {
+                        // ── SINGLE ITEM ──────────────────────────────────────────
+                        html+='<div class="item-row">';
+                        html+='<div class="item-img-col">'+imgHtml+'</div>';
+                        html+='<div class="item-info-col">';
+                        if(group.offerId) html+='<div class="item-offer">'+esc(group.offerId)+'</div>';
+                        html+='<div class="item-name">'+esc(getName(first))+'</div>';
+                        var d=getDesc(first); if(d) html+='<div class="item-desc">'+esc(d)+'</div>';
+                        html+='</div>';
+                        html+='<div class="item-qty-col">';
+                        html+='<div class="item-qty-value">'+esc(fmtQty(getQtyRaw(first)))+'</div>';
+                        html+='<div class="item-qty-uom">'+esc(getUom(first))+'</div>';
+                        html+='</div>';
+                        html+='</div>';
+
+                    } else {
+                        // ── BUNDLE (same offer_id) ────────────────────────────────
+                        // One shared image left, each item = own row with own big qty
+                        html+='<div class="item-row--bundle">';
+                        html+='<div class="item-img-col">'+imgHtml+'</div>';
+                        html+='<div class="bundle-list">';
+                        // offer id + badge header
+                        if(group.offerId) {
+                            html+='<div class="bundle-offer-bar">';
+                            html+='<span class="bundle-offer-text">'+esc(group.offerId)+'</span>';
+                            html+='<span class="bundle-badge">KOMPLET &middot; '+group.items.length+' POZ.</span>';
+                            html+='</div>';
+                        }
+                        for(var g=0;g<group.items.length;g++){
+                            var si=group.items[g];
+                            html+='<div class="bundle-entry">';
+                            html+='<div class="item-info-col">';
+                            html+='<div class="item-name">'+esc(getName(si))+'</div>';
+                            var sd=getDesc(si); if(sd) html+='<div class="item-desc">'+esc(sd)+'</div>';
+                            html+='</div>';
+                            html+='<div class="item-qty-col">';
+                            html+='<div class="item-qty-value">'+esc(fmtQty(getQtyRaw(si)))+'</div>';
+                            html+='<div class="item-qty-uom">'+esc(getUom(si))+'</div>';
+                            html+='</div>';
+                            html+='</div>';
+                        }
+                        html+='</div>'; // bundle-list
+                        html+='</div>'; // item-row--bundle
+                    }
+                }
+            }
+
+            el.packingContent.innerHTML=html;
+            show('packing');
+        }
+
+        function render() {
+            renderMeta(); renderOfflineBanners();
+            if(!state.stationCode){show('station-select');return;}
+            if(!state.current){renderIdle();return;}
+            if(state.current.state==='packing'){renderPacking();return;}
+            renderIdle();
+        }
+
+        function loadCurrent() {
+            if(!state.stationCode) return Promise.resolve();
+            if(state.isFetching){state.queuedReload=true;return Promise.resolve();}
+            state.isFetching=true; state.queuedReload=false;
+            return fetch(currentUrl(state.stationCode),{method:'GET',cache:'no-store',headers:{'Accept':'application/json'}})
+                .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+                .then(function(j){if(!j||j.ok!==true||!j.data)throw new Error('bad response');state.current=j.data;markOnline();render();})
+                .catch(function(e){console.error(e);markOfflineSoon();})
+                .finally(function(){state.isFetching=false;if(state.queuedReload){state.queuedReload=false;loadCurrent();}});
+        }
+
+        function disconnectStream() {
+            clearOfflineTimer();
+            if(state.eventSource){state.eventSource.close();state.eventSource=null;}
+        }
+
+        function connectStream() {
+            if(!state.stationCode||!window.EventSource){markOfflineSoon();return;}
+            disconnectStream(); setConnectingSoft();
+            try {
+                var es=new EventSource(streamUrl(state.stationCode));
+                state.eventSource=es;
+                es.onopen=function(){markOnline();};
+                es.addEventListener('screen_state_changed',function(){markOnline();loadCurrent();});
+                es.onerror=function(){markOfflineSoon();};
+            } catch(e){console.error(e);markOfflineSoon();}
+        }
+
+        function bootStation(code) { setStationCode(code);state.current=null;render();loadCurrent().then(function(){connectStream();}); }
+        function resetToStationSelect() { disconnectStream();clearStationCode();state.current=null;setConnection('connecting');render();el.stationInput.value='';el.stationInput.focus(); }
+        function openAdmin() { el.adminStationInput.value=state.stationCode||'';el.adminOverlay.classList.remove('hidden');el.adminStationInput.focus();el.adminStationInput.select(); }
+        function closeAdmin() { el.adminOverlay.classList.add('hidden'); }
+
+        function initEvents() {
+            el.stationForm.addEventListener('submit',function(e){e.preventDefault();var v=el.stationInput.value.trim();if(v)bootStation(v);});
+            el.adminHotspot.addEventListener('click',openAdmin);
+            el.adminSaveBtn.addEventListener('click',function(){var v=el.adminStationInput.value.trim();if(v){closeAdmin();bootStation(v);}});
+            el.adminClearBtn.addEventListener('click',function(){closeAdmin();resetToStationSelect();});
+            el.adminCloseBtn.addEventListener('click',closeAdmin);
+            window.addEventListener('keydown',function(e){
+                if(e.ctrlKey&&e.altKey&&e.key.toLowerCase()==='s'){e.preventDefault();openAdmin();return;}
+                if(e.key==='Escape'&&!el.adminOverlay.classList.contains('hidden'))closeAdmin();
+            });
+            el.adminOverlay.addEventListener('click',function(e){if(e.target===el.adminOverlay)closeAdmin();});
+        }
+
+        function init() {
+            initEvents();
+            if(state.stationCode)bootStation(state.stationCode);
+            else{render();el.stationInput.focus();}
+        }
+
+        init();
+    })();
+</script>
+</body>
+</html>
