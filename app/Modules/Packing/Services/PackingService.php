@@ -231,33 +231,58 @@ final class PackingService
     // CANCEL
     // -------------------------------------------------------------------------
 
-    public function cancelSession(string $orderCode, array $session): array
+    public function cancelSession(string $orderCode, array $session, ?string $reason = null): array
     {
         $packingSession = $this->repo->findSessionByOrderCode($orderCode);
         if (!$packingSession) {
             throw new RuntimeException('No packing session for order: ' . $orderCode);
         }
-        $this->assertSessionOwner($packingSession, $session);
+
+        $isAdmin = $this->repo->userHasAnyRole((int)$session['user_id'], ['admin', 'superadmin']);
+
+        if (!$isAdmin) {
+            $this->assertSessionOwner($packingSession, $session);
+        }
 
         if ($packingSession['status'] !== 'open') {
             throw new RuntimeException('Packing session is not open');
         }
 
+        $reason = $reason !== null ? trim($reason) : null;
+        if ($reason === '') {
+            $reason = null;
+        }
+
         $sessionId = (int)$packingSession['id'];
         $this->repo->cancelSession($sessionId);
 
+        $message = 'Packing cancelled for order: ' . $orderCode;
+        if ($reason !== null) {
+            $message .= ' | reason: ' . $reason;
+        }
+
         $this->repo->logEvent(
-            $sessionId, 'session_cancelled',
-            'Packing cancelled for order: ' . $orderCode,
+            $sessionId,
+            'session_cancelled',
+            $message,
             [
-                'session_id' => $sessionId,
-                'order_code' => $orderCode,
-                'user_id'    => (int)$session['user_id'],
+                'session_id'             => $sessionId,
+                'order_code'             => $orderCode,
+                'user_id'                => (int)$session['user_id'],
+                'reason'                 => $reason,
+                'cancelled_by_admin'     => $isAdmin,
+                'original_session_user'  => (int)($packingSession['user_id'] ?? 0),
+                'original_session_station'=> (int)($packingSession['station_id'] ?? 0),
             ],
             (int)$session['user_id']
         );
 
-        return ['order_code' => $orderCode, 'status' => 'cancelled'];
+        return [
+            'order_code'         => $orderCode,
+            'status'             => 'cancelled',
+            'reason'             => $reason,
+            'cancelled_by_admin' => $isAdmin,
+        ];
     }
 
     // -------------------------------------------------------------------------

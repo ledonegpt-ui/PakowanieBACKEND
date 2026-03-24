@@ -242,6 +242,13 @@ final class PickingBatchService
 
             $this->repo->markItemMissing((int)$item['id'], $reason, (int)$session['user_id']);
 
+            $pendingCount = $this->repo->countPendingItemsForBatchOrder((int)$batchOrder['id']);
+            if ($pendingCount === 0) {
+                $this->repo->markBatchOrderPicked((int)$batchOrder['id']);
+            }
+
+            $mailSent = $this->notifyMissingByEmail($batch, $batchOrder, $item, $reason, $session);
+
             $this->repo->logEvent(
                 (int)$batch['id'], 'item_missing',
                 (int)$batchOrder['id'], (int)$item['id'],
@@ -256,10 +263,14 @@ final class PickingBatchService
                         ? (int)$item['subiekt_tow_id']
                         : null,
                     'product_code'      => (string)$item['product_code'],
+                    'product_name'      => (string)$item['product_name'],
                     'uom'               => $item['uom'] !== null ? (string)$item['uom'] : null,
                     'is_unmapped'       => (bool)($item['is_unmapped'] ?? false),
+                    'expected_qty'      => (float)$item['expected_qty'],
                     'reason'            => $reason,
                     'user_id'           => (int)$session['user_id'],
+                    'mail_sent'         => $mailSent,
+                    'order_status'      => $pendingCount === 0 ? 'picked' : 'assigned',
                 ],
                 (int)$session['user_id']
             );
@@ -269,18 +280,19 @@ final class PickingBatchService
             $this->repo->commit();
 
             return [
-                'order_id'    => $batchOrderId,
-                'order_code'  => (string)$batchOrder['order_code'],
-                'item_id'     => $itemId,
-                'pak_item_id' => (int)$item['pak_order_item_id'],
-                'status'      => 'missing',
+                'order_id'     => $batchOrderId,
+                'order_code'   => (string)$batchOrder['order_code'],
+                'item_id'      => $itemId,
+                'pak_item_id'  => (int)$item['pak_order_item_id'],
+                'status'       => 'missing',
+                'order_status' => $pendingCount === 0 ? 'picked' : 'assigned',
+                'mail_sent'    => $mailSent,
             ];
         } catch (Throwable $e) {
             $this->repo->rollback();
             throw $e;
         }
     }
-
 
     public function dropOrderManual(int $batchOrderId, array $body, array $session): array
     {
@@ -774,6 +786,45 @@ final class PickingBatchService
             'orders'   => $orders,
             'products' => $products,
         ];
+    }
+
+
+    private function notifyMissingByEmail(array $batch, array $batchOrder, array $item, string $reason, array $session): bool
+    {
+        $to = trim((string)(getenv('PICKING_MISSING_EMAIL') ?: 'sklep@ledone.pl'));
+        if ($to === '' || !function_exists('mail')) {
+            return false;
+        }
+
+        $operator = trim((string)($session['display_name'] ?? $session['login'] ?? ('user#' . (int)$session['user_id'])));
+        $station  = trim((string)($session['station_code'] ?? $session['station_id'] ?? ''));
+        $qty      = (float)($item['expected_qty'] ?? 0);
+
+        $subjectText = 'Brak w pickingu: ' . (string)$batchOrder['order_code'] . ' / ' . (string)$item['product_code'];
+        $subject = '=?UTF-8?B?' . base64_encode($subjectText) . '?=';
+
+        $body = implode(PHP_EOL, [
+            'Zgłoszono brak podczas zbierania.',
+            '',
+            'Zamówienie: ' . (string)$batchOrder['order_code'],
+            'Produkt: ' . (string)$item['product_code'],
+            'Nazwa: ' . (string)($item['product_name'] ?? ''),
+            'Ilość: ' . $qty,
+            'Powód: ' . $reason,
+            'Batch ID: ' . (int)$batch['id'],
+            'Operator: ' . $operator,
+            'Stanowisko: ' . $station,
+            'User ID: ' . (int)$session['user_id'],
+            'Data: ' . date('Y-m-d H:i:s'),
+        ]);
+
+        $headers = [
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            'From: noreply@pakowanie.led-one.pl',
+        ];
+
+        return @mail($to, $subject, $body, implode("\r\n", $headers));
     }
 
     private function assertBatchOwner(array $batch, array $session): void

@@ -59,7 +59,6 @@ final class SubiektReaderV2
         ];
         if (!empty($s['uwCol']))     $select[] = "d.{$s['uwCol']} AS dok_Uwagi";
         if (!empty($s['typCol']))    $select[] = "d.{$s['typCol']} AS dok_Typ";
-        // ZMIANA: dodano kwota pobrania i waluta
         if (!empty($s['przelewCol'])) $select[] = "d.{$s['przelewCol']} AS dok_KwPrzelew";
         if (!empty($s['walutaCol']))  $select[] = "d.{$s['walutaCol']} AS dok_Waluta";
 
@@ -100,6 +99,45 @@ final class SubiektReaderV2
 
         $st = $this->mssql->prepare($sql);
         $st->execute($bind);
+        return $st->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+    }
+
+    /**
+     * Pobiera dokumenty z Subiekta dla konkretnego kodu zamówienia.
+     * Bez limitu dat — szuka po dok_Podtytul LIKE '%*KOD*%'.
+     * Zwraca wszystkie pasujące wiersze (posortowane dok_Id DESC).
+     *
+     * @param string $orderCode  np. "12345", "B456", "E789" (bez gwiazdek, uppercase)
+     * @return array<int,array<string,mixed>>
+     */
+    public function fetchDocByOrderCode(string $orderCode): array
+    {
+        // Normalizacja: strip gwiazdek z obu stron, uppercase, trim
+        // Obsługuje: "123456", "*123456*", "B456", "*B456*"
+        $orderCode = strtoupper(trim(trim($orderCode), '*'));
+        $orderCode = trim($orderCode);
+        if ($orderCode === '') return [];
+
+        $s = $this->getSchema();
+
+        $select = [
+            "d.dok_Id AS dok_Id",
+            "d.{$s['noCol']} AS dok_NrPelny",
+            "d.{$s['dateCol']} AS dok_Data",
+            "d.{$s['podCol']} AS dok_Podtytul",
+        ];
+        if (!empty($s['uwCol']))      $select[] = "d.{$s['uwCol']} AS dok_Uwagi";
+        if (!empty($s['typCol']))     $select[] = "d.{$s['typCol']} AS dok_Typ";
+        if (!empty($s['przelewCol'])) $select[] = "d.{$s['przelewCol']} AS dok_KwPrzelew";
+        if (!empty($s['walutaCol']))  $select[] = "d.{$s['walutaCol']} AS dok_Waluta";
+
+        $sql = "SELECT " . implode(", ", $select) . "
+                FROM {$s['docTable']} d
+                WHERE d.{$s['podCol']} LIKE :pt
+                ORDER BY d.dok_Id DESC";
+
+        $st = $this->mssql->prepare($sql);
+        $st->execute([':pt' => '%*' . $orderCode . '*%']);
         return $st->fetchAll(\PDO::FETCH_ASSOC) ?: [];
     }
 
@@ -178,7 +216,6 @@ final class SubiektReaderV2
             @mkdir(dirname($cachePath), 0775, true);
         }
 
-        // cache on by default
         $useCache = (string)env_val('SUB_SCHEMA_CACHE', '1');
         if ($useCache !== '0' && is_file($cachePath)) {
             $data = @include $cachePath;
@@ -204,7 +241,6 @@ final class SubiektReaderV2
 
         $this->schema = $this->detectSchema($from, $to, $pattern, $types);
 
-        // save cache
         if ($useCache !== '0') {
             $export = var_export($this->schema, true);
             @file_put_contents($cachePath, "<?php\nreturn {$export};\n");
@@ -226,7 +262,6 @@ final class SubiektReaderV2
         return array_values(array_unique($out));
     }
 
-    /** autodetekcja tabel/kolumn + wybór tw_Opis jeśli istnieje */
     private function detectSchema(\DateTimeImmutable $from, \DateTimeImmutable $to, string $pattern, array $types): array
     {
         $docTables = $this->mssql->query("
@@ -279,11 +314,9 @@ final class SubiektReaderV2
             $typCol    = $this->firstCol($docCols, ['dok_Typ','dok_Podtyp']);
             $uwCol     = $this->firstCol($docCols, ['dok_Uwagi','dok_Opis']);
             $magDocCol = $this->firstCol($docCols, ['dok_MagId','dok_MagazynId','dok_Mag']);
-            // ZMIANA: autodetekcja kolumn kwoty pobrania i waluty
             $przelewCol = $this->firstCol($docCols, ['dok_KwPrzelew']);
             $walutaCol  = $this->firstCol($docCols, ['dok_Waluta']);
 
-            // próbka dokumentu w zakresie
             $bind = [
                 ':from' => $from->format('Y-m-d H:i:s'),
                 ':to'   => $to->format('Y-m-d H:i:s'),
@@ -338,7 +371,6 @@ final class SubiektReaderV2
                             'typCol'     => $typCol,
                             'uwCol'      => $uwCol,
                             'magDocCol'  => $magDocCol,
-                            // ZMIANA: nowe kolumny w schemacie
                             'przelewCol' => $przelewCol,
                             'walutaCol'  => $walutaCol,
                             'posDocCol'  => $posDocCol,

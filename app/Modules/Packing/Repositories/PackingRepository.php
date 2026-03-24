@@ -430,6 +430,36 @@ final class PackingRepository
         return $st->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
+    public function userHasAnyRole(int $userId, array $roleCodes): bool
+    {
+        if ($userId <= 0 || empty($roleCodes)) {
+            return false;
+        }
+
+        $placeholders = [];
+        $params = [':user_id' => $userId];
+
+        foreach (array_values($roleCodes) as $i => $roleCode) {
+            $ph = ':role_' . $i;
+            $placeholders[] = $ph;
+            $params[$ph] = (string)$roleCode;
+        }
+
+        $sql = "
+            SELECT 1
+            FROM user_roles
+            WHERE user_id = :user_id
+              AND role_code IN (" . implode(',', $placeholders) . ")
+            LIMIT 1
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute($params);
+
+        return (bool)$st->fetchColumn();
+    }
+
+
     // -------------------------------------------------------------------------
     // EVENTS
     // -------------------------------------------------------------------------
