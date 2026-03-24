@@ -11,8 +11,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $boot = sizes_bootstrap();
-$cfg = $boot['cfg'];
-$db  = $boot['db'];
+$cfg  = $boot['cfg'];
+$db   = $boot['db'];
 
 $action = isset($_GET['action']) ? (string)$_GET['action'] : '';
 
@@ -65,7 +65,7 @@ try {
                 sizes_redirect();
             }
 
-            $id = isset($_POST['id']) ? (int)$_POST['id'] : 0;
+            $id         = isset($_POST['id']) ? (int)$_POST['id'] : 0;
             $sizeStatus = isset($_POST['size_status']) ? trim((string)$_POST['size_status']) : '';
 
             if ($id <= 0 || !in_array($sizeStatus, ['small', 'large', 'other'], true)) {
@@ -87,6 +87,43 @@ try {
             }
 
             sizes_redirect();
+            break;
+
+        case 'update_item':
+            $login = sizes_current_operator();
+            if ($login === null) {
+                sizes_set_flash('error', 'Najpierw ustaw operatora.');
+                sizes_redirect('browse.php');
+            }
+
+            $id   = isset($_POST['id']) ? (int)$_POST['id'] : 0;
+            $name = isset($_POST['name']) ? trim((string)$_POST['name']) : '';
+            $desc = isset($_POST['subiekt_desc']) ? trim((string)$_POST['subiekt_desc']) : '';
+
+            if ($desc === '') {
+                $desc = null;
+            }
+
+            $sizeStatus = isset($_POST['size_status']) && $_POST['size_status'] !== ''
+                ? trim((string)$_POST['size_status'])
+                : null;
+
+            if ($id <= 0 || $name === '') {
+                sizes_set_flash('error', 'Nieprawidłowe dane — brak ID lub nazwy.');
+                sizes_redirect('browse.php');
+            }
+
+            if ($sizeStatus !== null && !in_array($sizeStatus, ['small', 'large', 'other'], true)) {
+                sizes_set_flash('error', 'Nieprawidłowy rozmiar.');
+                sizes_redirect('browse.php');
+            }
+
+            sizes_update_item($db, $login, $id, $name, $desc, $sizeStatus);
+
+            $labels    = ['small' => 'MAŁA', 'large' => 'DUŻA', 'other' => 'INNE'];
+            $sizeLabel = $sizeStatus ? $labels[$sizeStatus] : 'bez rozmiaru';
+            sizes_set_flash('success', 'Zaktualizowano produkt (rozmiar: ' . $sizeLabel . ').');
+            sizes_redirect('browse.php');
             break;
 
         default:

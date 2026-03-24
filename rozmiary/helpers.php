@@ -320,3 +320,93 @@ function sizes_classify(\PDO $db, string $login, int $id, string $sizeStatus): b
 
     return $stmt->rowCount() > 0;
 }
+
+function sizes_fetch_all_items(
+    \PDO   $db,
+    int    $page         = 1,
+    int    $perPage      = 50,
+    string $search       = '',
+    string $filterStatus = ''
+): array {
+    $where  = [];
+    $params = [];
+
+    if ($search !== '') {
+        $where[]  = '(subiekt_symbol LIKE ? OR name LIKE ?)';
+        $like     = '%' . $search . '%';
+        $params[] = $like;
+        $params[] = $like;
+    }
+
+    if ($filterStatus === 'none') {
+        $where[] = 'size_status IS NULL';
+    } elseif (in_array($filterStatus, ['small', 'large', 'other'], true)) {
+        $where[]  = 'size_status = ?';
+        $params[] = $filterStatus;
+    }
+
+    $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+    $countStmt = $db->prepare("SELECT COUNT(*) FROM product_size_map $whereSql");
+    $countStmt->execute($params);
+    $total = (int)$countStmt->fetchColumn();
+
+    $limitInt  = (int)$perPage;
+    $offsetInt = (int)(($page - 1) * $perPage);
+
+    $stmt = $db->prepare("
+        SELECT
+            id,
+            subiekt_tow_id,
+            subiekt_symbol,
+            name,
+            subiekt_desc,
+            size_status,
+            classified_by_login,
+            classified_at
+        FROM product_size_map
+        $whereSql
+        ORDER BY id ASC
+        LIMIT {$limitInt} OFFSET {$offsetInt}
+    ");
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+
+    return [$rows, $total];
+}
+
+function sizes_update_item(
+    \PDO    $db,
+    string  $login,
+    int     $id,
+    string  $name,
+    ?string $desc,
+    ?string $sizeStatus
+): bool {
+    $allowed = ['small', 'large', 'other', null];
+    if (!in_array($sizeStatus, $allowed, true)) {
+        return false;
+    }
+
+    $stmt = $db->prepare("
+        UPDATE product_size_map
+        SET name                = ?,
+            subiekt_desc        = ?,
+            size_status         = ?,
+            classified_by_login = ?,
+            classified_at       = IF(? IS NOT NULL, NOW(), classified_at),
+            updated_at          = NOW()
+        WHERE id = ?
+    ");
+
+    $stmt->execute([
+        $name,
+        $desc,
+        $sizeStatus,
+        $login,
+        $sizeStatus,
+        $id,
+    ]);
+
+    return true;
+}

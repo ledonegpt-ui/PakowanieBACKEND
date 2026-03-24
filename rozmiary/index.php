@@ -215,6 +215,7 @@ $operators = sizes_operators();
         <?php endif; ?>
 
         <div class="toolbar">
+            <a href="browse.php" style="…">Przeglądaj wszystkie</a>
             <form method="post" action="handle.php?action=set_operator">
                 <select name="login" required>
                     <option value="">-- wybierz operatora --</option>
