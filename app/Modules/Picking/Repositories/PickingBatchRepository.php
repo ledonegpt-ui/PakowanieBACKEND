@@ -227,6 +227,12 @@ final class PickingBatchRepository
             SELECT order_code, delivery_method, carrier_code, courier_code
             FROM pak_orders
             WHERE status = 10
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM order_backlog_holds obh
+                  WHERE obh.order_code = pak_orders.order_code
+                    AND obh.status = 'open'
+              )
               $excludeClause
             ORDER BY imported_at ASC, order_code ASC
             LIMIT " . (int)$margin . "
@@ -301,6 +307,12 @@ final class PickingBatchRepository
             SELECT order_code, delivery_method, carrier_code, courier_code, courier_priority, imported_at
             FROM pak_orders
             WHERE status = 10
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM order_backlog_holds obh
+                  WHERE obh.order_code = pak_orders.order_code
+                    AND obh.status = 'open'
+              )
               $excludeClause
             ORDER BY courier_priority DESC, imported_at ASC, order_code ASC
             LIMIT " . (int)$margin . "
@@ -748,6 +760,77 @@ final class PickingBatchRepository
             ':reason'  => $reason,
             ':user_id' => $userId,
             ':id'      => $itemId,
+        ]);
+    }
+
+    public function createBacklogHold(
+        string $orderCode,
+        int $pakOrderItemId,
+        ?int $subiektTowId,
+        ?string $productCode,
+        string $productName,
+        float $missingQty,
+        string $holdType,
+        ?string $holdReason,
+        int $userId
+    ): void {
+        $check = $this->db->prepare("
+            SELECT id
+            FROM order_backlog_holds
+            WHERE order_code = :order_code
+              AND pak_order_item_id = :pak_order_item_id
+              AND status = 'open'
+            LIMIT 1
+        ");
+        $check->execute([
+            ':order_code'       => $orderCode,
+            ':pak_order_item_id'=> $pakOrderItemId,
+        ]);
+
+        if ($check->fetch(PDO::FETCH_ASSOC)) {
+            return;
+        }
+
+        $sql = "
+            INSERT INTO order_backlog_holds (
+                order_code,
+                pak_order_item_id,
+                subiekt_tow_id,
+                product_code,
+                product_name,
+                missing_qty,
+                hold_type,
+                hold_reason,
+                status,
+                created_by_user_id,
+                created_at,
+                updated_at
+            ) VALUES (
+                :order_code,
+                :pak_order_item_id,
+                :subiekt_tow_id,
+                :product_code,
+                :product_name,
+                :missing_qty,
+                :hold_type,
+                :hold_reason,
+                'open',
+                :user_id,
+                NOW(),
+                NOW()
+            )
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':order_code'        => $orderCode,
+            ':pak_order_item_id' => $pakOrderItemId,
+            ':subiekt_tow_id'    => $subiektTowId,
+            ':product_code'      => $productCode,
+            ':product_name'      => $productName,
+            ':missing_qty'       => $missingQty,
+            ':hold_type'         => $holdType,
+            ':hold_reason'       => $holdReason,
+            ':user_id'           => $userId,
         ]);
     }
 

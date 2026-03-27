@@ -228,6 +228,11 @@ final class PickingBatchService
             throw new RuntimeException('Missing reason for missing item');
         }
 
+        $holdType = trim((string)($body['hold_type'] ?? 'other'));
+        if (!in_array($holdType, array('production', 'supplier', 'other'), true)) {
+            $holdType = 'other';
+        }
+
         $this->repo->beginTransaction();
         try {
             $batch = $this->repo->findOpenBatchForUserForUpdate((int)$session['user_id']);
@@ -250,17 +255,35 @@ final class PickingBatchService
 
             $this->repo->markItemMissing((int)$item['id'], $reason, (int)$session['user_id']);
 
-            $pendingCount = $this->repo->countPendingItemsForBatchOrder((int)$batchOrder['id']);
-            if ($pendingCount === 0) {
-                $this->repo->markBatchOrderPicked((int)$batchOrder['id']);
-            }
+            $this->repo->createBacklogHold(
+                (string)$batchOrder['order_code'],
+                (int)$item['pak_order_item_id'],
+                isset($item['subiekt_tow_id']) && $item['subiekt_tow_id'] !== null ? (int)$item['subiekt_tow_id'] : null,
+                isset($item['product_code']) && $item['product_code'] !== null && trim((string)$item['product_code']) !== ''
+                    ? (string)$item['product_code']
+                    : null,
+                (string)$item['product_name'],
+                (float)$item['expected_qty'],
+                $holdType,
+                $reason,
+                (int)$session['user_id']
+            );
 
             $mailSent = $this->notifyMissingByEmail($batch, $batchOrder, $item, $reason, $session);
+
+            $this->dropOrder(
+                (string)$batchOrder['order_code'],
+                'missing_item_backlog:' . (string)($item['product_code'] ?? ''),
+                $session,
+                $batch
+            );
+
+            $refill = $this->doRefill((int)$batch['id'], $session, false);
 
             $this->repo->logEvent(
                 (int)$batch['id'], 'item_missing',
                 (int)$batchOrder['id'], (int)$item['id'],
-                'Item missing: ' . $item['product_code'],
+                'Item missing -> backlog: ' . $item['product_code'],
                 [
                     'batch_id'          => (int)$batch['id'],
                     'batch_order_id'    => $batchOrderId,
@@ -276,25 +299,28 @@ final class PickingBatchService
                     'is_unmapped'       => (bool)($item['is_unmapped'] ?? false),
                     'expected_qty'      => (float)$item['expected_qty'],
                     'reason'            => $reason,
+                    'hold_type'         => $holdType,
+                    'backlog_status'    => 'open',
                     'user_id'           => (int)$session['user_id'],
                     'mail_sent'         => $mailSent,
-                    'order_status'      => $pendingCount === 0 ? 'picked' : 'assigned',
+                    'order_status'      => 'backlog',
+                    'refilled'          => (int)($refill['refilled'] ?? 0),
                 ],
                 (int)$session['user_id']
             );
 
-            $this->repo->rebuildBatchItems((int)$batch['id']);
-
             $this->repo->commit();
 
             return [
-                'order_id'     => $batchOrderId,
-                'order_code'   => (string)$batchOrder['order_code'],
-                'item_id'      => $itemId,
-                'pak_item_id'  => (int)$item['pak_order_item_id'],
-                'status'       => 'missing',
-                'order_status' => $pendingCount === 0 ? 'picked' : 'assigned',
-                'mail_sent'    => $mailSent,
+                'order_id'      => $batchOrderId,
+                'order_code'    => (string)$batchOrder['order_code'],
+                'item_id'       => $itemId,
+                'pak_item_id'   => (int)$item['pak_order_item_id'],
+                'status'        => 'missing',
+                'order_status'  => 'backlog',
+                'hold_type'     => $holdType,
+                'mail_sent'     => $mailSent,
+                'refilled'      => (int)($refill['refilled'] ?? 0),
             ];
         } catch (Throwable $e) {
             $this->repo->rollback();

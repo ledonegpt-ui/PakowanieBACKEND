@@ -250,6 +250,12 @@ final class PackingRepository
             INNER JOIN picking_batches pb ON pb.id = pbo.batch_id
             WHERE pbo.order_code = :order_code
               AND pbo.status = 'picked'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM order_backlog_holds obh
+                  WHERE obh.order_code = pbo.order_code
+                    AND obh.status = 'open'
+              )
             ORDER BY pbo.id DESC
             LIMIT 1
         ");
@@ -514,6 +520,12 @@ final class PackingRepository
             WHERE pbo.batch_id = :batch_id
               AND pbo.status   = 'picked'
               AND NOT EXISTS (
+                  SELECT 1
+                  FROM order_backlog_holds obh
+                  WHERE obh.order_code = pbo.order_code
+                    AND obh.status = 'open'
+              )
+              AND NOT EXISTS (
                   SELECT 1 FROM packing_sessions ps
                   WHERE ps.order_code = pbo.order_code
                     AND ps.status     = 'completed'
@@ -550,6 +562,12 @@ final class PackingRepository
             WHERE pbo.batch_id    = :batch_id
               AND pbo.status      = 'picked'
               AND pbo.order_code != :current_order_code
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM order_backlog_holds obh
+                  WHERE obh.order_code = pbo.order_code
+                    AND obh.status = 'open'
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM packing_sessions ps
                   WHERE ps.order_code = pbo.order_code
