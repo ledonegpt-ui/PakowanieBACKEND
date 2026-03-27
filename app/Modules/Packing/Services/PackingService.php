@@ -191,14 +191,24 @@ final class PackingService
         $this->repo->markAllItemsPacked($sessionId);
         $this->repo->closeSession($sessionId);
 
+        require_once BASE_PATH . '/app/Services/FinishOrderSyncService.php';
+        $finishSync = new FinishOrderSyncService($this->cfg);
+        $operatorLabel = $finishSync->resolveOperatorLabel($session);
+
         $this->repo->updateOrderPackingFinished(
             $orderCode,
-            (string)($session['user_login'] ?? $session['user_id']),
+            $operatorLabel,
             (string)($session['station_code'] ?? $session['station_id']),
             (string)($resolved['carrier_code'] ?? $resolved['menu_group'] ?? ''),
             (string)($resolved['label_source'] ?? $resolved['menu_group'] ?? ''),
             (string)($package['tracking_number'] ?? null),
             (string)($resolved['courier_code'] ?? null)
+        );
+
+        $syncResult = $finishSync->syncAfterFinish(
+            $orderCode,
+            $session,
+            isset($package['tracking_number']) ? (string)$package['tracking_number'] : null
         );
 
         $this->repo->logEvent(
@@ -209,6 +219,7 @@ final class PackingService
                 'order_code'      => $orderCode,
                 'tracking_number' => $package['tracking_number'],
                 'user_id'         => (int)$session['user_id'],
+                'sync_result'     => $syncResult,
             ],
             (int)$session['user_id']
         );

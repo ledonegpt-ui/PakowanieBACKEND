@@ -83,6 +83,11 @@ if (!in_array($defaultPackageMode, array('small', 'large'), true)) {
     $defaultPackageMode = $currentPackageMode;
 }
 
+$currentPickingBatchSize = isset($station['picking_batch_size']) ? (int)$station['picking_batch_size'] : 2;
+if ($currentPickingBatchSize < 1) {
+    $currentPickingBatchSize = 2;
+}
+
 $carrier = isset($_GET['carrier']) ? trim($_GET['carrier']) : '';
 if ($carrier !== '') {
     $_SESSION['carrier'] = $carrier;
@@ -115,6 +120,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if (isset($actionRes['data']['data']['station']['package_mode_default'])) {
             $_SESSION['station']['package_mode_default'] = $actionRes['data']['data']['station']['package_mode_default'];
         }
+    }
+
+    unset($_SESSION['batch']);
+
+    $target = 'picking.php';
+    if ($carrier !== '') {
+        $target .= '?carrier=' . urlencode($carrier);
+    }
+    header('Location: ' . $target);
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'change_picking_batch_size') {
+    $newPickingBatchSize = isset($_POST['picking_batch_size']) ? (int)$_POST['picking_batch_size'] : 0;
+
+    $actionRes = apicall('POST', '/stations/picking-batch-size', array(
+        'picking_batch_size' => $newPickingBatchSize
+    ));
+    save_log('change_picking_batch_size size=' . $newPickingBatchSize, $actionRes);
+
+    if (isset($actionRes['data']['data']['station']['picking_batch_size'])) {
+        $_SESSION['station']['picking_batch_size'] = (int)$actionRes['data']['data']['station']['picking_batch_size'];
     }
 
     unset($_SESSION['batch']);
@@ -403,6 +430,7 @@ function submitDrop(formId) {
             <div>Tryb stanowiska (sesja): <strong><?php echo h($currentPackageMode); ?></strong></div>
             <div>Tryb batcha: <strong><?php echo h($batchPackageMode); ?></strong></div>
             <div class="small">Domyślny tryb stanowiska: <?php echo h($defaultPackageMode); ?></div>
+            <div>Ile pobrać (sesja): <strong><?php echo h((string)$currentPickingBatchSize); ?></strong></div>
             <div>Tryb doboru: <strong><?php echo h($currentSelectionMode); ?></strong></div>
             <div>Aktywne pozycje order-level: <?php echo h(count($rows)); ?></div>
             <div>Pozycje jeszcze do obsługi: <?php echo h($pendingRowsCount); ?></div>
@@ -418,7 +446,15 @@ function submitDrop(formId) {
                     </select>
                     <button type="submit" class="btn-top gray" style="border:0;cursor:pointer;">Zapisz tryb</button>
                 </form>
-                <div class="small" style="margin-top:6px;">Po zmianie trybu ekran odświeży sesję stanowiska. Dla nowo otwieranych batchy backend dobierze zamówienia zgodnie z carrier + package_mode.</div>
+
+                <form method="post" action="picking.php<?php echo $carrier !== '' ? '?carrier=' . urlencode($carrier) : ''; ?>" style="margin-top:8px;">
+                    <input type="hidden" name="action" value="change_picking_batch_size">
+                    <label for="picking_batch_size"><strong>Ile pobrać:</strong></label>
+                    <input type="number" name="picking_batch_size" id="picking_batch_size" min="1" max="100" value="<?php echo h((string)$currentPickingBatchSize); ?>" style="width:90px;">
+                    <button type="submit" class="btn-top gray" style="border:0;cursor:pointer;">Zapisz ilość</button>
+                </form>
+
+                <div class="small" style="margin-top:6px;">Po zmianie ilości ekran odświeży sesję stanowiska. Dla nowo otwieranych batchy backend pobierze dokładnie tyle zamówień, niezależnie od wybranego trybu MAŁE/DUŻE.</div>
             </div>
 
             <form method="post" action="picking.php<?php echo $carrier !== '' ? '?carrier=' . urlencode($carrier) : ''; ?>" style="margin-top:10px;">

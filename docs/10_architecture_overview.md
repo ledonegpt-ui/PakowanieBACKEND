@@ -115,8 +115,11 @@ large
 Sesja operatora:
 
 user_station_sessions.package_mode
+user_station_sessions.picking_batch_size
 
-Operator może zmienić tryb tylko dla swojej sesji.
+Operator może zmienić dla swojej sesji:
+- tryb stanowiska (`package_mode`)
+- domyślną liczbę zamówień do nowego batcha (`picking_batch_size`)
 
 4 Otwieranie batcha pickingu
 
@@ -261,3 +264,25 @@ GUI działa szybko
 refill działa przewidywalnie
 
 operatorzy nie blokują sobie pracy
+
+## Aktualizacja 2026-03-25 — sesyjny picking_batch_size
+
+Nowy element architektury sesji stacji:
+- `user_station_sessions.picking_batch_size`
+
+Rola:
+- przechowuje domyślną liczbę zamówień pobieranych do nowego batcha
+- działa dla całej aktywnej sesji stanowiska
+- jest niezależny od `package_mode`
+
+Nowy endpoint:
+- `POST /api/v1/stations/picking-batch-size`
+
+Zależności:
+- `package_mode` nadal steruje rozdziałem `small` / `large`
+- `target_orders_count` pozostaje parametrem batcha
+- przy `POST /api/v1/picking/batches/open`:
+  - jeśli body zawiera `target_orders_count`, ta wartość ma priorytet
+  - jeśli nie, backend bierze wartość z `user_station_sessions.picking_batch_size`
+  - jeśli sesja nie ma poprawnej wartości, używany jest fallback z konfiguracji `PICKING_BATCH_SIZE`
+

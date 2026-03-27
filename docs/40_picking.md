@@ -223,3 +223,16 @@ To nie jest tabela pomocnicza ani martwy artefakt.
 
 `orders` w API służy do operacji item-level.
 `products` w API służy do renderowania głównej listy zbiorczej.
+
+## Domyślna wielkość batcha w sesji stacji
+
+Przy `POST /api/v1/picking/batches/open` backend może przyjąć `target_orders_count` z body.
+Jeśli `target_orders_count` nie zostanie przekazany, domyślna wartość jest pobierana z aktywnej sesji stacji:
+- `user_station_sessions.picking_batch_size`
+
+Jeżeli sesja nie ma ustawionej poprawnej wartości, backend używa fallbacku z konfiguracji (`PICKING_BATCH_SIZE`).
+
+To ustawienie jest niezależne od `package_mode`:
+- `package_mode` nadal określa tryb `small` / `large`
+- `picking_batch_size` określa ile zamówień ma zostać pobranych do nowego batcha
+

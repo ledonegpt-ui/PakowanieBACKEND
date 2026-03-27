@@ -46,18 +46,12 @@ final class AuthService
             ? trim((string)$station['package_mode_default'])
             : 'small';
 
-        if (!in_array($packageMode, ['small', 'large'], true)) {
-            $packageMode = 'small';
-        }
+        if (!in_array($packageMode, ['small', 'large'], true)) { $packageMode = 'small'; }
+        $pickingBatchSize = (int)($this->cfg['picking_batch_size'] ?? 2);
+        if ($pickingBatchSize < 1) { $pickingBatchSize = 2; }
 
         $this->repo->deactivateActiveSessionsForUser((int)$user['id']);
-        $this->repo->createSession(
-            (int)$user['id'],
-            (int)$station['id'],
-            $token,
-            $workflowMode,
-            $packageMode
-        );
+        $this->repo->createSession( (int)$user['id'], (int)$station['id'], $token, $workflowMode, $packageMode, $pickingBatchSize );
 
         $roles = $this->repo->rolesForUser((int)$user['id']);
 
@@ -79,6 +73,7 @@ final class AuthService
                 'printer_name' => $station['printer_name'],
                 'package_mode' => $packageMode,
                 'package_mode_default' => $packageMode,
+                'picking_batch_size' => $pickingBatchSize,
             ],
         ];
     }
@@ -106,9 +101,10 @@ final class AuthService
             ? trim((string)$session['package_mode_default'])
             : 'small';
 
-        if (!in_array($packageModeDefault, ['small', 'large'], true)) {
-            $packageModeDefault = 'small';
-        }
+        if (!in_array($packageModeDefault, ['small', 'large'], true)) { $packageModeDefault = 'small'; }
+        $sessionPickingBatchSize = isset($session['picking_batch_size']) ? (int)$session['picking_batch_size'] : (int)($this->cfg['picking_batch_size'] ?? 2);
+        if ($sessionPickingBatchSize < 1) { $sessionPickingBatchSize = (int)($this->cfg['picking_batch_size'] ?? 2); }
+        if ($sessionPickingBatchSize < 1) { $sessionPickingBatchSize = 2; }
 
         return [
             'token' => $session['session_token'],
@@ -128,6 +124,7 @@ final class AuthService
                 'printer_name' => $session['printer_name'],
                 'package_mode' => $packageMode,
                 'package_mode_default' => $packageModeDefault,
+                'picking_batch_size' => $sessionPickingBatchSize,
             ],
             'session' => [
                 'session_id' => (int)$session['session_id'],

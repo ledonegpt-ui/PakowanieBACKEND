@@ -27,11 +27,12 @@ return [
     ],
 
     'firebird' => [
-        'dsn'          => env('FB_DSN', ''),
-        'user'         => env('FB_USER', ''),
-        'pass'         => env('FB_PASS', ''),
-        'limit'        => env_int('FB_LIMIT', 500),
-        'section_ready'=> env('FB_SECTION_READY', '27'),
+        'dsn'           => env('FB_DSN', ''),
+        'user'          => env('FB_USER', ''),
+        'pass'          => env('FB_PASS', ''),
+        'limit'         => env_int('FB_LIMIT', 500),
+        'section_ready' => env('FB_SECTION_READY', '27'),
+        'section_packed'=> env('FB_SECTION_PACKED', '47'),
     ],
 
     'mssql' => [
@@ -44,7 +45,8 @@ return [
     ],
 
     'baselinker' => [
-        'token' => env('BASELINKER_TOKEN', ''),
+        'token'         => env('BASELINKER_TOKEN', ''),
+        'status_packed' => env_int('BASELINKER_STATUS_PACKED', 16060),
     ],
 
     'allegro' => [

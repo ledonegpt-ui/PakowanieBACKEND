@@ -336,6 +336,9 @@ function sizes_badge_label(?string $status): string
 
         <form method="post" action="handle.php?action=update_item" id="editForm">
             <input type="hidden" name="id" id="editId">
+            <input type="hidden" name="_redirect_page"   value="<?php echo (int)$currentPage; ?>">
+            <input type="hidden" name="_redirect_q"      value="<?php echo sizes_h($search); ?>">
+            <input type="hidden" name="_redirect_status" value="<?php echo sizes_h($filterStatus); ?>">
 
             <div class="form-group">
                 <label for="editName">Nazwa</label>

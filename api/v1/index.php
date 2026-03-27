@@ -93,7 +93,12 @@ $routes = [
 
     }],
 
-    ['GET', '/api/v1/screens/{stationCode}/current', function (array $params) use ($cfg): void {
+    
+    ['POST', '/api/v1/stations/picking-batch-size', function (array $params) use ($cfg): void {
+        (new StationsController($cfg))->pickingBatchSize();
+    }],
+
+['GET', '/api/v1/screens/{stationCode}/current', function (array $params) use ($cfg): void {
 
         (new ScreensController($cfg))->current($params);
 

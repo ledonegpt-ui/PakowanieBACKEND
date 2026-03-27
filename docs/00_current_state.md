@@ -35,14 +35,19 @@ Orders used for picking must have: pak_orders.status = 10
 
 ---
 
-## Stations — aktualizacja 2026-03-19
+## Stations — aktualizacja 2026-03-25
 
-Moduł Stations posiada teraz trzy endpointy:
+Moduł Stations posiada teraz cztery endpointy:
 - `GET /api/v1/stations` — lista aktywnych stacji
 - `POST /api/v1/stations/select` — stub techniczny
 - `POST /api/v1/stations/package-mode` — **zaimplementowany**
   - aktualizuje tryb pakowania (`small` | `large`) w aktywnej sesji stacji
   - źródło: `StationsController::packageMode()` → `StationsService::updatePackageMode()`
+- `POST /api/v1/stations/picking-batch-size` — **zaimplementowany**
+  - aktualizuje liczbę zamówień pobieranych do nowego batcha w aktywnej sesji stacji
+  - źródło: `StationsController::pickingBatchSize()` → `StationsService::updatePickingBatchSize()`
+  - wartość jest zapisywana w `user_station_sessions.picking_batch_size`
+  - ta wartość jest używana jako domyślna przy `POST /api/v1/picking/batches/open`
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Cel
 
-Dokument opisuje aktualny model danych używany przez moduł pickingu po wdrożeniu obsługi `package_mode` na poziomie stanowiska, sesji i batcha.
+Dokument opisuje aktualny model danych używany przez moduł pickingu po wdrożeniu obsługi `package_mode` oraz sesyjnego `picking_batch_size` na poziomie stanowiska, sesji i batcha.
 
 ---
 
@@ -489,3 +489,28 @@ Najważniejsze po wdrożeniu:
 - GUI powinno pokazywać zarówno:
   - tryb stanowiska
   - tryb batcha
+
+## Aktualizacja 2026-03-25 — picking_batch_size w sesji stacji
+
+Nowe pole sesji operatora / stacji:
+- `user_station_sessions.picking_batch_size`
+
+Znaczenie:
+- przechowuje domyślną liczbę zamówień pobieranych do nowo otwieranego batcha
+- działa dla całej aktywnej sesji stacji
+- jest niezależne od `package_mode`
+
+Relacja do istniejących pól:
+- `package_mode` nadal rozdziela flow `small` / `large`
+- `target_orders_count` jest zapisywany w `picking_batches`
+- przy `POST /api/v1/picking/batches/open`:
+  - jeśli body zawiera `target_orders_count`, ta wartość ma priorytet
+  - jeśli body nie zawiera `target_orders_count`, backend bierze wartość z `user_station_sessions.picking_batch_size`
+  - jeśli sesja nie ma poprawnej wartości, używany jest fallback z konfiguracji `PICKING_BATCH_SIZE`
+
+Skutek architektoniczny:
+- sesja operatora definiuje domyślny `package_mode` dla nowo otwieranego batcha
+- sesja operatora definiuje też domyślny `picking_batch_size` dla nowo otwieranego batcha
+- batch po utworzeniu zachowuje własny zapisany `package_mode`
+- batch po utworzeniu zachowuje własny zapisany `target_orders_count`
+

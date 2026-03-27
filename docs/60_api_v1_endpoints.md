@@ -38,6 +38,13 @@ Base path: `/api/v1`
   - Aktualizuje `package_mode` w aktywnej sesji stacji (`user_station_sessions`).
   - Odpowiedź: `{ ok, data: { station: { station_id, station_code, package_mode, package_mode_default } } }`
   - Błędy: 400 jeśli brak tokenu, brak aktywnej sesji lub nieprawidłowa wartość `package_mode`
+- `POST /api/v1/stations/picking-batch-size`
+- Status: **zaimplementowany**
+- Wymaga: Bearer token (aktywna sesja stacji)
+- Body: `{ "picking_batch_size": 1..100 }`
+- Aktualizuje `picking_batch_size` w aktywnej sesji stacji (`user_station_sessions`).
+- Odpowiedź: `{ ok, data: { station: { station_id, station_code, package_mode, package_mode_default, picking_batch_size } } }`
+- Błędy: 400 jeśli brak tokenu, brak aktywnej sesji lub nieprawidłowa wartość `picking_batch_size`
 
 ---
 
@@ -52,6 +59,7 @@ Base path: `/api/v1`
 ### Batch lifecycle
 
 - `POST /api/v1/picking/batches/open`
+- Body może przekazać `target_orders_count`, ale jeśli go brak, backend bierze domyślną wartość z aktywnej sesji stacji (`user_station_sessions.picking_batch_size`), a dopiero potem fallback z konfiguracji.
 - `GET  /api/v1/picking/batches/current`
 - `GET  /api/v1/picking/batches/{batchId}`
 - `POST /api/v1/picking/batches/{batchId}/refill`

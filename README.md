@@ -153,8 +153,12 @@ package_mode_default
 Sesja operatora:
 
 user_station_sessions.package_mode
+user_station_sessions.picking_batch_size
 
-Operator może zmienić tryb dla swojej sesji.
+Operator może zmienić dla swojej sesji:
+
+- tryb stanowiska (`package_mode`)
+- liczbę zamówień pobieranych do nowego batcha (`picking_batch_size`)
 
 API
 
@@ -262,3 +266,26 @@ generowanie etykiet
 Autor
 
 Projekt rozwijany wewnętrznie dla systemu magazynowego.
+
+## Aktualizacja 2026-03-25 — sesyjna wielkość batcha pickingowego
+
+Nowe ustawienie sesji stacji:
+- `user_station_sessions.picking_batch_size`
+
+To ustawienie:
+- jest niezależne od `package_mode`
+- określa ile zamówień ma zostać pobranych do nowego batcha
+- działa dla całej aktywnej sesji stanowiska
+
+Nowy endpoint:
+- `POST /api/v1/stations/picking-batch-size`
+
+Body:
+- `{ "picking_batch_size": 1..100 }`
+
+Zasada działania:
+- `package_mode` nadal określa tryb `small` / `large`
+- przy `POST /api/v1/picking/batches/open` backend może przyjąć `target_orders_count` z body
+- jeśli `target_orders_count` nie zostanie przekazany, backend bierze wartość z `user_station_sessions.picking_batch_size`
+- jeśli sesja nie ma poprawnej wartości, używany jest fallback z konfiguracji `PICKING_BATCH_SIZE`
+

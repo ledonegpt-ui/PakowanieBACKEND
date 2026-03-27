@@ -23,6 +23,10 @@ Endpointy:
 - `POST /api/v1/stations/select` — stub techniczny (nie modyfikuje sesji)
 - `POST /api/v1/stations/package-mode` — **zaimplementowany**
   - Aktualizuje `package_mode` (`small` | `large`) dla aktywnej sesji stacji
+- `POST /api/v1/stations/picking-batch-size` — **zaimplementowany**
+  - Aktualizuje `picking_batch_size` dla aktywnej sesji stacji
+  - Wartość jest zapisywana w `user_station_sessions.picking_batch_size`
+  - Ta wartość jest używana jako domyślna przy otwieraniu nowego batcha pickingu
   - Wymaga aktywnej sesji w `user_station_sessions`
 
 ### Carriers

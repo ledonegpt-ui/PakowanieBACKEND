@@ -34,13 +34,7 @@ final class StationsRepository
     public function findActiveSessionByToken(string $token): ?array
     {
         $sql = "
-            SELECT
-                s.id AS session_id,
-                s.station_id,
-                s.package_mode,
-                st.station_code,
-                st.station_name,
-                st.package_mode_default
+            SELECT s.id AS session_id, s.station_id, s.package_mode, s.picking_batch_size, st.station_code, st.station_name, st.package_mode_default
             FROM user_station_sessions s
             INNER JOIN stations st ON st.id = s.station_id
             WHERE s.session_token = :token
@@ -71,4 +65,22 @@ final class StationsRepository
             ':session_id' => $sessionId,
         ]);
     }
+
+
+    public function updateSessionPickingBatchSize(int $sessionId, int $pickingBatchSize): void
+    {
+        $sql = "
+            UPDATE user_station_sessions
+            SET picking_batch_size = :picking_batch_size,
+                last_seen_at = NOW()
+            WHERE id = :session_id
+              AND is_active = 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':picking_batch_size' => $pickingBatchSize,
+            ':session_id' => $sessionId,
+        ]);
+    }
+
 }

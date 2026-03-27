@@ -66,32 +66,12 @@ final class AuthRepository
         $st->execute([':user_id' => $userId]);
     }
 
-    public function createSession(
-        int $userId,
-        int $stationId,
-        string $token,
-        string $workflowMode,
-        string $packageMode
-    ): void {
+    public function createSession( int $userId, int $stationId, string $token, string $workflowMode, string $packageMode, int $pickingBatchSize ): void {
         $sql = "
             INSERT INTO user_station_sessions (
-                user_id,
-                station_id,
-                session_token,
-                workflow_mode,
-                package_mode,
-                started_at,
-                last_seen_at,
-                is_active
+                user_id, station_id, session_token, workflow_mode, package_mode, picking_batch_size, started_at, last_seen_at, is_active
             ) VALUES (
-                :user_id,
-                :station_id,
-                :session_token,
-                :workflow_mode,
-                :package_mode,
-                NOW(),
-                NOW(),
-                1
+                :user_id, :station_id, :session_token, :workflow_mode, :package_mode, :picking_batch_size, NOW(), NOW(), 1
             )
         ";
         $st = $this->db->prepare($sql);
@@ -100,8 +80,7 @@ final class AuthRepository
             ':station_id' => $stationId,
             ':session_token' => $token,
             ':workflow_mode' => $workflowMode,
-            ':package_mode' => $packageMode,
-        ]);
+            ':package_mode' => $packageMode, ':picking_batch_size' => $pickingBatchSize, ]);
     }
 
     public function findActiveSessionByToken(string $token): ?array
@@ -110,9 +89,7 @@ final class AuthRepository
             SELECT
                 s.id AS session_id,
                 s.session_token,
-                s.workflow_mode,
-                s.package_mode,
-                s.started_at,
+                s.workflow_mode, s.package_mode, s.picking_batch_size, s.started_at,
                 s.last_seen_at,
                 u.id AS user_id,
                 u.login,

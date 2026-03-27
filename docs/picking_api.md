@@ -59,3 +59,19 @@ Widok produktowy jest budowany agregacyjnie po:
 
 ### Przejście dalej
 Po zamknięciu batcha ordery mogą przejść do dalszego etapu, w tym do packingu.
+
+## Aktualizacja 2026-03-25 — domyślny rozmiar batcha z sesji stacji
+
+Dla `POST /api/v1/picking/batches/open` można jawnie przekazać:
+- `target_orders_count`
+
+Jeśli `target_orders_count` nie zostanie przekazany:
+- backend najpierw sprawdza aktywną sesję stacji
+- używa `user_station_sessions.picking_batch_size`
+- dopiero potem używa fallbacku z konfiguracji `PICKING_BATCH_SIZE`
+
+To ustawienie:
+- jest niezależne od `package_mode`
+- `package_mode` nadal określa tryb `small` / `large`
+- `picking_batch_size` określa ile zamówień ma zostać pobranych do nowego batcha
+

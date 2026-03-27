@@ -23,7 +23,15 @@ final class PickingBatchService
     {
         $carrierKey        = trim((string)($body['carrier_key'] ?? ''));
         $selectionMode    = trim((string)($body['selection_mode'] ?? 'cutoff_cluster'));
-        $targetOrdersCount = (int)($body['target_orders_count'] ?? ($this->cfg['picking_batch_size'] ?? 3));
+        $sessionPickingBatchSize = isset($session['picking_batch_size']) ? (int)$session['picking_batch_size'] : (int)($this->cfg['picking_batch_size'] ?? 3);
+        if ($sessionPickingBatchSize < 1) {
+            $sessionPickingBatchSize = (int)($this->cfg['picking_batch_size'] ?? 3);
+        }
+        if ($sessionPickingBatchSize < 1) {
+            $sessionPickingBatchSize = 1;
+        }
+
+        $targetOrdersCount = (int)($body['target_orders_count'] ?? $sessionPickingBatchSize);
 
         if ($carrierKey === '') {
             throw new RuntimeException('Missing carrier_key');

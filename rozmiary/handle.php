@@ -123,7 +123,16 @@ try {
             $labels    = ['small' => 'MAŁA', 'large' => 'DUŻA', 'other' => 'INNE'];
             $sizeLabel = $sizeStatus ? $labels[$sizeStatus] : 'bez rozmiaru';
             sizes_set_flash('success', 'Zaktualizowano produkt (rozmiar: ' . $sizeLabel . ').');
-            sizes_redirect('browse.php');
+
+            $rPage   = isset($_POST['_redirect_page'])   ? max(1, (int)$_POST['_redirect_page']) : 1;
+            $rQ      = isset($_POST['_redirect_q'])      ? trim((string)$_POST['_redirect_q']) : '';
+            $rStatus = isset($_POST['_redirect_status']) ? trim((string)$_POST['_redirect_status']) : '';
+
+            $params = ['page' => $rPage];
+            if ($rQ !== '')      $params['q']      = $rQ;
+            if ($rStatus !== '') $params['status'] = $rStatus;
+
+            sizes_redirect('browse.php?' . http_build_query($params));
             break;
 
         default:
