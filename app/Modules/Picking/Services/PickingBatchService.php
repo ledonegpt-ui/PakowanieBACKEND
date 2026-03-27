@@ -800,16 +800,18 @@ final class PickingBatchService
     private function notifyMissingByEmail(array $batch, array $batchOrder, array $item, string $reason, array $session): bool
     {
         $to = trim((string)(getenv('PICKING_MISSING_EMAIL') ?: 'sklep@ledone.pl'));
-        if ($to === '' || !function_exists('mail')) {
+        if ($to === '') {
+            error_log('[PickingBatchService] Missing PICKING_MISSING_EMAIL configuration');
             return false;
         }
+
+        require_once BASE_PATH . '/app/Support/Mailer.php';
 
         $operator = trim((string)($session['display_name'] ?? $session['login'] ?? ('user#' . (int)$session['user_id'])));
         $station  = trim((string)($session['station_code'] ?? $session['station_id'] ?? ''));
         $qty      = (float)($item['expected_qty'] ?? 0);
 
-        $subjectText = 'Brak w pickingu: ' . (string)$batchOrder['order_code'] . ' / ' . (string)$item['product_code'];
-        $subject = '=?UTF-8?B?' . base64_encode($subjectText) . '?=';
+        $subject = 'Brak w pickingu: ' . (string)$batchOrder['order_code'] . ' / ' . (string)$item['product_code'];
 
         $body = implode(PHP_EOL, [
             'Zgłoszono brak podczas zbierania.',
@@ -826,13 +828,12 @@ final class PickingBatchService
             'Data: ' . date('Y-m-d H:i:s'),
         ]);
 
-        $headers = [
-            'MIME-Version: 1.0',
-            'Content-Type: text/plain; charset=UTF-8',
-            'From: noreply@pakowanie.led-one.pl',
-        ];
+        $sent = Mailer::sendPlainText($to, $subject, $body);
+        if (!$sent) {
+            error_log('[PickingBatchService] SMTP send failed for missing item notification, order=' . (string)$batchOrder['order_code'] . ', product=' . (string)$item['product_code']);
+        }
 
-        return @mail($to, $subject, $body, implode("\r\n", $headers));
+        return $sent;
     }
 
     private function assertBatchOwner(array $batch, array $session): void
