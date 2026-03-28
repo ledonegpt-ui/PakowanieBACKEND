@@ -20,6 +20,7 @@ final class AuthService
         $loginOrBarcode = trim((string)($body['barcode'] ?? $body['login'] ?? ''));
         $stationCode = trim((string)($body['station_code'] ?? ''));
         $workflowMode = trim((string)($body['workflow_mode'] ?? 'integrated'));
+        $workMode = trim((string)($body['work_mode'] ?? 'picker'));
 
         if ($loginOrBarcode === '') {
             throw new RuntimeException('Missing login or barcode');
@@ -41,6 +42,11 @@ final class AuthService
 
         $token = bin2hex(random_bytes(32));
         $workflowMode = ($workflowMode !== '' ? $workflowMode : 'integrated');
+        if (!in_array($workflowMode, ['integrated', 'split'], true)) { $workflowMode = 'integrated'; }
+
+        $workMode = ($workMode !== '' ? $workMode : 'picker');
+        if (!in_array($workMode, ['picker', 'packer'], true)) { $workMode = 'picker'; }
+        if ($workflowMode === 'integrated') { $workMode = 'picker'; }
 
         $packageMode = isset($station['package_mode_default'])
             ? trim((string)$station['package_mode_default'])
@@ -51,13 +57,14 @@ final class AuthService
         if ($pickingBatchSize < 1) { $pickingBatchSize = 2; }
 
         $this->repo->deactivateActiveSessionsForUser((int)$user['id']);
-        $this->repo->createSession( (int)$user['id'], (int)$station['id'], $token, $workflowMode, $packageMode, $pickingBatchSize );
+        $this->repo->createSession( (int)$user['id'], (int)$station['id'], $token, $workflowMode, $workMode, $packageMode, $pickingBatchSize );
 
         $roles = $this->repo->rolesForUser((int)$user['id']);
 
         return [
             'token' => $token,
             'workflow_mode' => $workflowMode,
+            'work_mode' => $workMode,
             'user' => [
                 'id' => (int)$user['id'],
                 'login' => $user['login'],
@@ -109,6 +116,7 @@ final class AuthService
         return [
             'token' => $session['session_token'],
             'workflow_mode' => $session['workflow_mode'],
+            'work_mode' => (string)($session['work_mode'] ?? 'picker'),
             'user' => [
                 'id' => (int)$session['user_id'],
                 'login' => $session['login'],

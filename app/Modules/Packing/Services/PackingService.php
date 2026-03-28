@@ -25,6 +25,20 @@ final class PackingService
 
     public function openSession(string $orderCode, array $session): array
     {
+        $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : 'integrated';
+        if (!in_array($workflowMode, ['integrated', 'split'], true)) {
+            $workflowMode = 'integrated';
+        }
+
+        $workMode = isset($session['work_mode']) ? trim((string)$session['work_mode']) : 'picker';
+        if (!in_array($workMode, ['picker', 'packer'], true)) {
+            $workMode = 'picker';
+        }
+
+        if ($workflowMode === 'split' && $workMode !== 'packer') {
+            throw new RuntimeException('Current user is not in packer mode');
+        }
+
         $this->repo->beginTransaction();
         try {
             $existing = $this->repo->findOpenSessionForUserForUpdate((int)$session['user_id']);
@@ -47,6 +61,15 @@ final class PackingService
             $pickingDone = $this->repo->findCompletedPickingBatchOrder($orderCode);
             if (!$pickingDone) {
                 throw new RuntimeException('Order has not been picked yet: ' . $orderCode);
+            }
+
+            $batchBasket = null;
+            $batchIdForPacking = (int)($pickingDone['batch_id'] ?? 0);
+            if ($batchIdForPacking > 0) {
+                $batchBasket = $this->repo->findBatchBasket($batchIdForPacking);
+                if ($batchBasket && (string)($batchBasket['workflow_mode'] ?? '') === 'split' && !empty($batchBasket['basket_id'])) {
+                    $this->repo->markBasketPackingInProgress((int)$batchBasket['basket_id']);
+                }
             }
 
             $sessionCode = 'PACK-' . time() . '-' . $session['user_id'];
@@ -228,6 +251,11 @@ final class PackingService
         $nextOrder  = $batchId ? $this->repo->findNextBatchOrder($batchId, $orderCode) : null;
         $carrierKey = $batchId ? $this->repo->findBatchCarrierKey($batchId) : null;
 
+        $batchBasket = $batchId ? $this->repo->findBatchBasket($batchId) : null;
+        if ($batchBasket && (string)($batchBasket['workflow_mode'] ?? '') === 'split' && !empty($batchBasket['basket_id']) && $nextOrder === null) {
+            $this->repo->releaseBasketAfterPacking((int)$batchBasket['basket_id'], $batchId);
+        }
+
         return [
             'order_code'      => $orderCode,
             'status'          => 'completed',
@@ -235,6 +263,7 @@ final class PackingService
             'next_order_code' => $nextOrder ? $nextOrder['order_code'] : null,
             'batch_completed' => $nextOrder === null,
             'carrier_key'     => $carrierKey,
+            'basket_no'       => $batchBasket && !empty($batchBasket['basket_no']) ? (int)$batchBasket['basket_no'] : null,
         ];
     }
 
@@ -300,6 +329,86 @@ final class PackingService
     // NEXT ORDER (Zadanie 1)
     // -------------------------------------------------------------------------
 
+    public function getNextReadyBatch(array $session): array
+    {
+        $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : 'integrated';
+        if (!in_array($workflowMode, ['integrated', 'split'], true)) {
+            $workflowMode = 'integrated';
+        }
+
+        $workMode = isset($session['work_mode']) ? trim((string)$session['work_mode']) : 'picker';
+        if (!in_array($workMode, ['picker', 'packer'], true)) {
+            $workMode = 'picker';
+        }
+
+        if ($workflowMode === 'split' && $workMode !== 'packer') {
+            throw new RuntimeException('Current user is not in packer mode');
+        }
+
+        $packageMode = isset($session['package_mode']) ? trim((string)$session['package_mode']) : 'small';
+        if (!in_array($packageMode, ['small', 'large'], true)) {
+            $packageMode = 'small';
+        }
+
+        $batch = $this->repo->findNextReadyBatchForPacking($packageMode);
+        if (!$batch) {
+            return [
+                'batch_id' => null,
+                'basket_id' => null,
+                'basket_no' => null,
+                'package_mode' => $packageMode,
+                'ready' => false,
+                'reason' => 'no_ready_baskets',
+            ];
+        }
+
+        return [
+            'batch_id' => (int)$batch['batch_id'],
+            'basket_id' => (int)$batch['basket_id'],
+            'basket_no' => (int)$batch['basket_no'],
+            'package_mode' => (string)$batch['package_mode'],
+            'ready' => true,
+            'reason' => null,
+        ];
+    }
+
+    public function openNextReadyBatch(array $session): array
+    {
+        $nextBatch = $this->getNextReadyBatch($session);
+        if (empty($nextBatch['ready']) || empty($nextBatch['batch_id'])) {
+            return [
+                'ready' => false,
+                'reason' => $nextBatch['reason'] ?? 'no_ready_baskets',
+                'batch_id' => null,
+                'basket_id' => null,
+                'basket_no' => null,
+                'order_code' => null,
+            ];
+        }
+
+        $batchId = (int)$nextBatch['batch_id'];
+        $orderCode = $this->repo->findNextOrderToPack($batchId);
+
+        if ($orderCode === null || $orderCode === '') {
+            return [
+                'ready' => false,
+                'reason' => 'no_orders_in_ready_batch',
+                'batch_id' => $batchId,
+                'basket_id' => (int)$nextBatch['basket_id'],
+                'basket_no' => (int)$nextBatch['basket_no'],
+                'order_code' => null,
+            ];
+        }
+
+        $result = $this->openSession($orderCode, $session);
+        $result['auto_loaded_batch'] = true;
+        $result['batch_id'] = $batchId;
+        $result['basket_id'] = (int)$nextBatch['basket_id'];
+        $result['basket_no'] = (int)$nextBatch['basket_no'];
+
+        return $result;
+    }
+
     public function getNextOrder(int $batchId, array $session): array
     {
         if (!$this->repo->batchExists($batchId)) {
@@ -334,6 +443,20 @@ final class PackingService
         $package = $this->repo->findPackageBySession($sessionId);
         $label   = $package ? $this->repo->findLabelByPackage((int)$package['id']) : null;
 
+        $basket = null;
+        $batchId = $session && isset($session['picking_batch_id']) ? (int)$session['picking_batch_id'] : 0;
+        if ($batchId > 0) {
+            $batchBasket = $this->repo->findBatchBasket($batchId);
+            if ($batchBasket && !empty($batchBasket['basket_id'])) {
+                $basket = [
+                    'basket_id' => (int)$batchBasket['basket_id'],
+                    'basket_no' => !empty($batchBasket['basket_no']) ? (int)$batchBasket['basket_no'] : null,
+                    'basket_status' => (string)($batchBasket['basket_status'] ?? ''),
+                    'package_mode' => (string)($batchBasket['package_mode'] ?? ''),
+                ];
+            }
+        }
+
         $items = $this->enrichItemsWithPhotos($items);
 
         return [
@@ -343,6 +466,7 @@ final class PackingService
             'items'    => $items,
             'package'  => $package,
             'label'    => $label,
+            'basket'   => $basket,
         ];
     }
 

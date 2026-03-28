@@ -50,6 +50,17 @@ final class PickingBatchesController
                         'message' => $inner->getMessage(),
                     );
                 }
+            } elseif (strpos((string)$e->getMessage(), 'No free baskets for package_mode:') === 0) {
+                $details = array(
+                    'reason' => 'no_free_baskets',
+                    'package_mode' => isset($currentSession['package_mode']) ? (string)$currentSession['package_mode'] : 'small',
+                );
+            } elseif ((string)$e->getMessage() === 'Current user is not in picker mode') {
+                $details = array(
+                    'reason' => 'invalid_work_mode',
+                    'required_work_mode' => 'picker',
+                    'work_mode' => isset($currentSession['work_mode']) ? (string)$currentSession['work_mode'] : 'picker',
+                );
             }
 
             ApiResponse::error($e->getMessage(), 400, $details);

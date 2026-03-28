@@ -34,7 +34,7 @@ final class StationsRepository
     public function findActiveSessionByToken(string $token): ?array
     {
         $sql = "
-            SELECT s.id AS session_id, s.station_id, s.package_mode, s.picking_batch_size, st.station_code, st.station_name, st.package_mode_default
+            SELECT s.id AS session_id, s.station_id, s.work_mode, s.package_mode, s.picking_batch_size, st.station_code, st.station_name, st.package_mode_default
             FROM user_station_sessions s
             INNER JOIN stations st ON st.id = s.station_id
             WHERE s.session_token = :token
@@ -66,6 +66,38 @@ final class StationsRepository
         ]);
     }
 
+
+    public function updateSessionWorkflowMode(int $sessionId, string $workflowMode): void
+    {
+        $sql = "
+            UPDATE user_station_sessions
+            SET workflow_mode = :workflow_mode,
+                last_seen_at = NOW()
+            WHERE id = :session_id
+              AND is_active = 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':workflow_mode' => $workflowMode,
+            ':session_id' => $sessionId,
+        ]);
+    }
+
+    public function updateSessionWorkMode(int $sessionId, string $workMode): void
+    {
+        $sql = "
+            UPDATE user_station_sessions
+            SET work_mode = :work_mode,
+                last_seen_at = NOW()
+            WHERE id = :session_id
+              AND is_active = 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':work_mode' => $workMode,
+            ':session_id' => $sessionId,
+        ]);
+    }
 
     public function updateSessionPickingBatchSize(int $sessionId, int $pickingBatchSize): void
     {

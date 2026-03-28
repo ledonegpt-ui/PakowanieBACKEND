@@ -583,6 +583,85 @@ final class PackingRepository
         return $st->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
+    public function findNextReadyBatchForPacking(string $packageMode): ?array
+    {
+        $st = $this->db->prepare("
+            SELECT
+                pb.id AS batch_id,
+                pb.batch_code,
+                pb.package_mode,
+                pb.basket_id,
+                wb.basket_no,
+                wb.status AS basket_status
+            FROM picking_batches pb
+            INNER JOIN workflow_baskets wb ON wb.id = pb.basket_id
+            WHERE pb.workflow_mode = 'split'
+              AND pb.status = 'completed'
+              AND pb.package_mode = :package_mode
+              AND wb.status = 'picked_ready'
+            ORDER BY pb.completed_at ASC, pb.id ASC
+            LIMIT 1
+        ");
+        $st->execute([':package_mode' => $packageMode]);
+        return $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    public function findBatchBasket(int $batchId): ?array
+    {
+        $st = $this->db->prepare("
+            SELECT
+                pb.id AS batch_id,
+                pb.workflow_mode,
+                pb.package_mode,
+                pb.basket_id,
+                wb.basket_no,
+                wb.status AS basket_status
+            FROM picking_batches pb
+            LEFT JOIN workflow_baskets wb ON wb.id = pb.basket_id
+            WHERE pb.id = :batch_id
+            LIMIT 1
+        ");
+        $st->execute([':batch_id' => $batchId]);
+        return $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    public function markBasketPackingInProgress(int $basketId): void
+    {
+        $st = $this->db->prepare("
+            UPDATE workflow_baskets
+            SET status = 'packing_in_progress',
+                packing_started_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :basket_id
+              AND status IN ('picked_ready', 'packing_in_progress')
+        ");
+        $st->execute([':basket_id' => $basketId]);
+    }
+
+    public function releaseBasketAfterPacking(int $basketId, int $batchId): void
+    {
+        $st = $this->db->prepare("
+            UPDATE workflow_baskets
+            SET status = 'empty',
+                reserved_batch_id = NULL,
+                reserved_by_user_id = NULL,
+                reserved_at = NULL,
+                picked_ready_at = NULL,
+                packing_started_at = NULL,
+                updated_at = NOW()
+            WHERE id = :basket_id
+        ");
+        $st->execute([':basket_id' => $basketId]);
+
+        $st = $this->db->prepare("
+            UPDATE picking_batches
+            SET basket_id = NULL,
+                updated_at = NOW()
+            WHERE id = :batch_id
+        ");
+        $st->execute([':batch_id' => $batchId]);
+    }
+
     public function findBatchCarrierKey(int $batchId): ?string
     {
         $st = $this->db->prepare("

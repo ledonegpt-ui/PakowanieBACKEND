@@ -95,6 +95,18 @@ $routes = [
     }],
 
     
+    ['POST', '/api/v1/stations/workflow-mode', function (array $params) use ($cfg): void {
+
+        (new StationsController($cfg))->workflowMode();
+
+    }],
+
+    ['POST', '/api/v1/stations/work-mode', function (array $params) use ($cfg): void {
+
+        (new StationsController($cfg))->workMode();
+
+    }],
+
     ['POST', '/api/v1/stations/picking-batch-size', function (array $params) use ($cfg): void {
         (new StationsController($cfg))->pickingBatchSize();
     }],
@@ -257,9 +269,21 @@ $routes = [
         (new PanelOrdersController($cfg))->update($params);
 
     }],
-    ['GET', '/api/v1/packing/next', function(array $params): void {
+    ['POST', '/api/v1/packing/open-next-ready-batch', function(array $params) use ($cfg): void {
 
-        (new PackingController())->next($params);
+        (new PackingController($cfg))->openNextReadyBatch($params);
+
+    }],
+
+    ['GET', '/api/v1/packing/next-ready-batch', function(array $params) use ($cfg): void {
+
+        (new PackingController($cfg))->nextReadyBatch($params);
+
+    }],
+
+    ['GET', '/api/v1/packing/next', function(array $params) use ($cfg): void {
+
+        (new PackingController($cfg))->next($params);
 
     }],
 

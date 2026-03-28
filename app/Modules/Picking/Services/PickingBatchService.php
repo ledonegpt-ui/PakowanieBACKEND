@@ -53,6 +53,20 @@ final class PickingBatchService
             $packageMode = 'small';
         }
 
+        $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : 'integrated';
+        if (!in_array($workflowMode, array('integrated', 'split'), true)) {
+            $workflowMode = 'integrated';
+        }
+
+        $workMode = isset($session['work_mode']) ? trim((string)$session['work_mode']) : 'picker';
+        if (!in_array($workMode, array('picker', 'packer'), true)) {
+            $workMode = 'picker';
+        }
+
+        if ($workflowMode === 'split' && $workMode !== 'picker') {
+            throw new RuntimeException('Current user is not in picker mode');
+        }
+
         $this->repo->beginTransaction();
         try {
             $existing = $this->repo->findOpenBatchForUserForUpdate((int)$session['user_id']);
@@ -60,6 +74,14 @@ final class PickingBatchService
                 $existingBatchId = (int)$existing['id'];
                 $this->repo->rollback();
                 return $this->getBatchDetail($existingBatchId);
+            }
+
+            $basket = null;
+            if ($workflowMode === 'split') {
+                $basket = $this->repo->findFreeBasketForUpdate($packageMode);
+                if (!$basket) {
+                    throw new RuntimeException('No free baskets for package_mode: ' . $packageMode);
+                }
             }
 
             $excludedCodes = $this->repo->getOrderCodesInOpenBatches();
@@ -76,10 +98,15 @@ final class PickingBatchService
                 $packageMode,
                 (int)$session['user_id'],
                 (int)$session['station_id'],
-                (string)($session['workflow_mode'] ?? 'integrated'),
+                $workflowMode,
                 $selectionMode,
                 $targetOrdersCount
             );
+
+            if ($workflowMode === 'split' && $basket) {
+                $this->repo->reserveBasketForBatch((int)$basket['id'], $batchId, (int)$session['user_id']);
+                $this->repo->attachBasketToBatch($batchId, (int)$basket['id']);
+            }
 
             foreach ($orders as $order) {
                 $batchOrderId = $this->repo->insertBatchOrder($batchId, $order['order_code']);
@@ -432,6 +459,11 @@ final class PickingBatchService
                 throw new RuntimeException('Batch is not open');
             }
 
+            if (!empty($batch['basket_id'])) {
+                $this->repo->releaseBasketReservation((int)$batch['basket_id']);
+                $this->repo->clearBatchBasket($batchId);
+            }
+
             $this->repo->abandonBatch($batchId);
 
             $this->repo->logEvent(
@@ -517,6 +549,16 @@ final class PickingBatchService
                 throw new RuntimeException(
                     'Cannot close batch: ' . $stats['assigned_count'] . ' order(s) still assigned (not picked)'
                 );
+            }
+
+            $workflowMode = isset($batch['workflow_mode']) ? trim((string)$batch['workflow_mode']) : 'integrated';
+            if ($workflowMode === 'split' && !empty($batch['basket_id'])) {
+                if ((int)$stats['picked_count'] > 0) {
+                    $this->repo->markBasketPickedReady((int)$batch['basket_id']);
+                } else {
+                    $this->repo->releaseBasketReservation((int)$batch['basket_id']);
+                    $this->repo->clearBatchBasket($batchId);
+                }
             }
 
             $this->repo->closeBatch($batchId);

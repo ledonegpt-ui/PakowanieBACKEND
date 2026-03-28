@@ -18,13 +18,15 @@ final class PickingBatchRepository
     public function findOpenBatchForUser(int $userId): ?array
     {
         $sql = "
-            SELECT id, batch_code, carrier_key, package_mode, user_id, station_id,
-                   status, workflow_mode, selection_mode, target_orders_count,
-                   started_at, completed_at, abandoned_at
-            FROM picking_batches
-            WHERE user_id = :user_id
-              AND status = 'open'
-            ORDER BY started_at DESC
+            SELECT pb.id, pb.batch_code, pb.carrier_key, pb.package_mode, pb.user_id, pb.station_id, pb.basket_id,
+                   wb.basket_no, wb.status AS basket_status,
+                   pb.status, pb.workflow_mode, pb.selection_mode, pb.target_orders_count,
+                   pb.started_at, pb.completed_at, pb.abandoned_at
+            FROM picking_batches pb
+            LEFT JOIN workflow_baskets wb ON wb.id = pb.basket_id
+            WHERE pb.user_id = :user_id
+              AND pb.status = 'open'
+            ORDER BY pb.started_at DESC
             LIMIT 1
         ";
         $st = $this->db->prepare($sql);
@@ -36,13 +38,15 @@ final class PickingBatchRepository
     public function findOpenBatchForUserForUpdate(int $userId): ?array
     {
         $sql = "
-            SELECT id, batch_code, carrier_key, package_mode, user_id, station_id,
-                   status, workflow_mode, selection_mode, target_orders_count,
-                   started_at, completed_at, abandoned_at
-            FROM picking_batches
-            WHERE user_id = :user_id
-              AND status = 'open'
-            ORDER BY started_at DESC
+            SELECT pb.id, pb.batch_code, pb.carrier_key, pb.package_mode, pb.user_id, pb.station_id, pb.basket_id,
+                   wb.basket_no, wb.status AS basket_status,
+                   pb.status, pb.workflow_mode, pb.selection_mode, pb.target_orders_count,
+                   pb.started_at, pb.completed_at, pb.abandoned_at
+            FROM picking_batches pb
+            LEFT JOIN workflow_baskets wb ON wb.id = pb.basket_id
+            WHERE pb.user_id = :user_id
+              AND pb.status = 'open'
+            ORDER BY pb.started_at DESC
             LIMIT 1
             FOR UPDATE
         ";
@@ -55,11 +59,13 @@ final class PickingBatchRepository
     public function findBatchById(int $batchId): ?array
     {
         $sql = "
-            SELECT id, batch_code, carrier_key, package_mode, user_id, station_id,
-                   status, workflow_mode, selection_mode, target_orders_count,
-                   started_at, completed_at, abandoned_at
-            FROM picking_batches
-            WHERE id = :id
+            SELECT pb.id, pb.batch_code, pb.carrier_key, pb.package_mode, pb.user_id, pb.station_id, pb.basket_id,
+                   wb.basket_no, wb.status AS basket_status,
+                   pb.status, pb.workflow_mode, pb.selection_mode, pb.target_orders_count,
+                   pb.started_at, pb.completed_at, pb.abandoned_at
+            FROM picking_batches pb
+            LEFT JOIN workflow_baskets wb ON wb.id = pb.basket_id
+            WHERE pb.id = :id
             LIMIT 1
         ";
         $st = $this->db->prepare($sql);
@@ -71,11 +77,13 @@ final class PickingBatchRepository
     public function findBatchByIdForUpdate(int $batchId): ?array
     {
         $sql = "
-            SELECT id, batch_code, carrier_key, package_mode, user_id, station_id,
-                   status, workflow_mode, selection_mode, target_orders_count,
-                   started_at, completed_at, abandoned_at
-            FROM picking_batches
-            WHERE id = :id
+            SELECT pb.id, pb.batch_code, pb.carrier_key, pb.package_mode, pb.user_id, pb.station_id, pb.basket_id,
+                   wb.basket_no, wb.status AS basket_status,
+                   pb.status, pb.workflow_mode, pb.selection_mode, pb.target_orders_count,
+                   pb.started_at, pb.completed_at, pb.abandoned_at
+            FROM picking_batches pb
+            LEFT JOIN workflow_baskets wb ON wb.id = pb.basket_id
+            WHERE pb.id = :id
             LIMIT 1
             FOR UPDATE
         ";
@@ -83,6 +91,107 @@ final class PickingBatchRepository
         $st->execute([':id' => $batchId]);
         $row = $st->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    public function findFreeBasketForUpdate(string $packageMode): ?array
+    {
+        $sql = "
+            SELECT id, basket_no, package_mode, status, reserved_batch_id, reserved_by_user_id
+            FROM workflow_baskets
+            WHERE package_mode = :package_mode
+              AND status = 'empty'
+            ORDER BY basket_no ASC
+            LIMIT 1
+            FOR UPDATE
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([':package_mode' => $packageMode]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+    public function reserveBasketForBatch(int $basketId, int $batchId, int $userId): void
+    {
+        $sql = "
+            UPDATE workflow_baskets
+            SET status = 'reserved',
+                reserved_batch_id = :batch_id,
+                reserved_by_user_id = :user_id,
+                reserved_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :basket_id
+              AND status = 'empty'
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':basket_id' => $basketId,
+            ':batch_id' => $batchId,
+            ':user_id' => $userId,
+        ]);
+    }
+
+    public function attachBasketToBatch(int $batchId, int $basketId): void
+    {
+        $sql = "
+            UPDATE picking_batches
+            SET basket_id = :basket_id,
+                updated_at = NOW()
+            WHERE id = :batch_id
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':batch_id' => $batchId,
+            ':basket_id' => $basketId,
+        ]);
+    }
+
+    public function clearBatchBasket(int $batchId): void
+    {
+        $sql = "
+            UPDATE picking_batches
+            SET basket_id = NULL,
+                updated_at = NOW()
+            WHERE id = :batch_id
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':batch_id' => $batchId,
+        ]);
+    }
+
+    public function releaseBasketReservation(int $basketId): void
+    {
+        $sql = "
+            UPDATE workflow_baskets
+            SET status = 'empty',
+                reserved_batch_id = NULL,
+                reserved_by_user_id = NULL,
+                reserved_at = NULL,
+                picked_ready_at = NULL,
+                packing_started_at = NULL,
+                updated_at = NOW()
+            WHERE id = :basket_id
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':basket_id' => $basketId,
+        ]);
+    }
+
+    public function markBasketPickedReady(int $basketId): void
+    {
+        $sql = "
+            UPDATE workflow_baskets
+            SET status = 'picked_ready',
+                picked_ready_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :basket_id
+              AND status = 'reserved'
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':basket_id' => $basketId,
+        ]);
     }
 
     public function getBatchStats(int $batchId): array
@@ -1324,7 +1433,7 @@ final class PickingBatchRepository
             SELECT COUNT(*)
             FROM order_backlog_holds
             WHERE order_code = :order_code
-              AND status = 'open'
+              AND pb.status = 'open'
         ";
         $stRemain = $this->db->prepare($sqlRemain);
 
