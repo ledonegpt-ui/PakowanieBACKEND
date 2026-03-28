@@ -528,7 +528,7 @@ final class PackingRepository
               AND NOT EXISTS (
                   SELECT 1 FROM packing_sessions ps
                   WHERE ps.order_code = pbo.order_code
-                    AND ps.status     = 'completed'
+                    AND ps.status IN ('completed', 'open')
               )
             ORDER BY pbo.id ASC
             LIMIT 1
@@ -571,7 +571,7 @@ final class PackingRepository
               AND NOT EXISTS (
                   SELECT 1 FROM packing_sessions ps
                   WHERE ps.order_code = pbo.order_code
-                    AND ps.status     = 'completed'
+                    AND ps.status IN ('completed', 'open')
               )
             ORDER BY pbo.id ASC
             LIMIT 1
@@ -600,7 +600,7 @@ final class PackingRepository
               AND pb.package_mode = :package_mode
               AND wb.status = 'picked_ready'
             ORDER BY pb.completed_at ASC, pb.id ASC
-            LIMIT 1
+            LIMIT 1 FOR UPDATE
         ");
         $st->execute([':package_mode' => $packageMode]);
         return $st->fetch(PDO::FETCH_ASSOC) ?: null;

@@ -113,6 +113,7 @@ final class StationsService
             'station' => [
                 'station_id' => (int)$updated['station_id'],
                 'station_code' => (string)$updated['station_code'],
+                'workflow_mode' => (string)($updated['workflow_mode'] ?? 'integrated'),
                 'work_mode' => (string)$updated['work_mode'],
                 'package_mode' => (string)$updated['package_mode'],
                 'package_mode_default' => (string)$updated['package_mode_default'],

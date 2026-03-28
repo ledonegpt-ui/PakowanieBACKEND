@@ -34,7 +34,7 @@ final class StationsRepository
     public function findActiveSessionByToken(string $token): ?array
     {
         $sql = "
-            SELECT s.id AS session_id, s.station_id, s.work_mode, s.package_mode, s.picking_batch_size, st.station_code, st.station_name, st.package_mode_default
+            SELECT s.id AS session_id, s.station_id, s.workflow_mode, s.work_mode, s.package_mode, s.picking_batch_size, st.station_code, st.station_name, st.package_mode_default
             FROM user_station_sessions s
             INNER JOIN stations st ON st.id = s.station_id
             WHERE s.session_token = :token

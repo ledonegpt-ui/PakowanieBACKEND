@@ -46,6 +46,22 @@ Base path: `/api/v1`
 - Odpowiedź: `{ ok, data: { station: { station_id, station_code, package_mode, package_mode_default, picking_batch_size } } }`
 - Błędy: 400 jeśli brak tokenu, brak aktywnej sesji lub nieprawidłowa wartość `picking_batch_size`
 
+- `POST /api/v1/stations/workflow-mode`
+  - Status: **zaimplementowany**
+  - Wymaga: Bearer token (aktywna sesja stacji)
+  - Body: `{ "workflow_mode": "integrated" | "split" }`
+  - Aktualizuje `workflow_mode` w aktywnej sesji stacji.
+  - Odpowiedź: `{ ok, data: { station: { station_id, station_code, workflow_mode, work_mode, package_mode, package_mode_default, picking_batch_size } } }`
+  - Błędy: 400 jeśli brak tokenu, brak aktywnej sesji lub nieprawidłowa wartość
+
+- `POST /api/v1/stations/work-mode`
+  - Status: **zaimplementowany**
+  - Wymaga: Bearer token (aktywna sesja stacji)
+  - Body: `{ "work_mode": "picker" | "packer" }`
+  - Aktualizuje `work_mode` w aktywnej sesji stacji (rola operatora w trybie split).
+  - Odpowiedź: `{ ok, data: { station: { station_id, station_code, workflow_mode, work_mode, package_mode, package_mode_default, picking_batch_size } } }`
+  - Błędy: 400 jeśli brak tokenu, brak aktywnej sesji lub nieprawidłowa wartość
+
 ---
 
 ## Carriers
@@ -91,6 +107,18 @@ Wartości id zwracają:
 
 
 ## Packing — nawigacja
+
+- `GET /api/v1/packing/next-ready-batch`
+  - Sprawdza czy jest gotowy koszyk dla packera (tryb split).
+  - Wymaga: `work_mode = packer` w sesji
+  - Odpowiedź: `{ batch_id, basket_id, basket_no, package_mode, ready, reason }`
+  - Szczegóły: `docs/46_split_workflow.md`
+
+- `POST /api/v1/packing/open-next-ready-batch`
+  - Atomowo otwiera pierwszy gotowy koszyk i pierwszą sesję pakowania (tryb split).
+  - Wymaga: `work_mode = packer` w sesji
+  - Odpowiedź: dane sesji pakowania + `auto_loaded_batch`, `batch_id`, `basket_id`, `basket_no`
+  - Szczegóły: `docs/46_split_workflow.md`
 
 - `GET /api/v1/packing/next?batch_id={id}`
   - Zwraca pierwsze zamówienie z batcha gotowe do spakowania

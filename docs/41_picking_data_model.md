@@ -74,10 +74,13 @@ Tabela aktywnych i historycznych sesji operatorów na stanowiskach.
 - `user_id`
 - `station_id`
 - `session_token`
-- `workflow_mode`
-- `package_mode`
+- `workflow_mode` — tryb pracy stacji: `integrated` (domyślny) lub `split`
+- `work_mode` — rola operatora w trybie split: `picker` lub `packer`
+- `package_mode` — aktualny tryb rozmiaru: `small` lub `large`
+- `picking_batch_size` — domyślna liczba zamówień w nowym batchu
 - `started_at`
 - `last_seen_at`
+- `is_active`
 - `ended_at`
 - `is_active`
 

@@ -35,9 +35,9 @@ Orders used for picking must have: pak_orders.status = 10
 
 ---
 
-## Stations — aktualizacja 2026-03-25
+## Stations — aktualizacja 2026-03-28
 
-Moduł Stations posiada teraz cztery endpointy:
+Moduł Stations posiada sześć endpointów:
 - `GET /api/v1/stations` — lista aktywnych stacji
 - `POST /api/v1/stations/select` — stub techniczny
 - `POST /api/v1/stations/package-mode` — **zaimplementowany**
@@ -48,6 +48,25 @@ Moduł Stations posiada teraz cztery endpointy:
   - źródło: `StationsController::pickingBatchSize()` → `StationsService::updatePickingBatchSize()`
   - wartość jest zapisywana w `user_station_sessions.picking_batch_size`
   - ta wartość jest używana jako domyślna przy `POST /api/v1/picking/batches/open`
+- `POST /api/v1/stations/workflow-mode` — **zaimplementowany**
+  - aktualizuje tryb pracy stacji (`integrated` | `split`) w aktywnej sesji
+  - źródło: `StationsController::workflowMode()` → `StationsService::updateWorkflowMode()`
+  - zwraca pełny obiekt station z workflow_mode, work_mode, package_mode
+- `POST /api/v1/stations/work-mode` — **zaimplementowany**
+  - aktualizuje rolę operatora (`picker` | `packer`) w aktywnej sesji
+  - istotne tylko w trybie `split`
+  - źródło: `StationsController::workMode()` → `StationsService::updateWorkMode()`
+  - zwraca pełny obiekt station z workflow_mode, work_mode, package_mode
+
+## Split workflow — aktualizacja 2026-03-28
+
+Zaimplementowany tryb rozdzielny picker/packer.
+Szczegółowy opis: `docs/46_split_workflow.md`
+
+Nowe tabele: `workflow_baskets`
+Nowe pola sesji: `workflow_mode`, `work_mode`
+Nowe pole batcha: `basket_id`
+Nowe endpointy packingu: `GET /packing/next-ready-batch`, `POST /packing/open-next-ready-batch`
 
 ---
 
