@@ -220,7 +220,7 @@ final class PackingRepository
                    delivery_fullname, delivery_city, delivery_postcode,
                    delivery_address, phone, email, pickup_point_id, pickup_point_name, pickup_point_address,
                    pack_started_at, pack_ended_at, packer, station,
-                   label_source, printed_at, printed_by, print_count, nr_nadania, cod_amount, cod_currency,
+                   label_source, printed_at, printed_by, print_count, nr_nadania, tracking_number, cod_amount, cod_currency,
                    bl_order_id, bl_package_id, allegro_parcel_id, shop_order_id
             FROM pak_orders
             WHERE order_code = :order_code

@@ -3,6 +3,13 @@ declare(strict_types=1);
 
 class GlsAdapter implements ShippingAdapterInterface
 {
+    private $cfg;
+
+    public function __construct(array $cfg = [])
+    {
+        $this->cfg = $cfg;
+    }
+
     public function generateLabel(
         array $order,
         array $package,
@@ -34,16 +41,23 @@ class GlsAdapter implements ShippingAdapterInterface
 
             try {
                 if (!empty($package['external_shipment_id'])) {
-                    // Przypadek A — przesyłka już istnieje
-                    $parcelId       = $package['external_shipment_id'];
-                    $trackingNumber = $parcelId;
+                    // Przypadek A — przesyłka już istnieje lokalnie
+                    $parcelId       = (string)$package['external_shipment_id'];
+                    $trackingNumber = (string)($order['tracking_number'] ?? $order['nr_nadania'] ?? $parcelId);
                 } else {
-                    // Przypadek B — nowa przesyłka
-                    $insertResult   = $this->createParcel($hClient, $szSession, $order);
-                    $rawResponse    = (array)$insertResult;
-                    // API zwraca cID { int id }
-                    $parcelId       = (string)($insertResult->return->id ?? '');
-                    $trackingNumber = $parcelId;
+                    // Przypadek B — spróbuj znaleźć istniejącą przesyłkę w Firebird po numerze nadania
+                    $parcelId = $this->resolveExistingParcelIdFromFirebird($order);
+
+                    if ($parcelId !== '') {
+                        $trackingNumber = (string)($order['tracking_number'] ?? $order['nr_nadania'] ?? $parcelId);
+                    } else {
+                        // Przypadek C — nowa przesyłka
+                        $insertResult   = $this->createParcel($hClient, $szSession, $order);
+                        $rawResponse    = (array)$insertResult;
+                        // API zwraca cID { int id }
+                        $parcelId       = (string)($insertResult->return->id ?? '');
+                        $trackingNumber = $parcelId;
+                    }
                 }
 
                 // 2. Pobierz etykietę ZPL
@@ -89,6 +103,23 @@ class GlsAdapter implements ShippingAdapterInterface
                 ],
             ];
         }
+    }
+
+    private function resolveExistingParcelIdFromFirebird(array $order): string
+    {
+        $tracking = trim((string)($order['tracking_number'] ?? $order['nr_nadania'] ?? ''));
+        if ($tracking === '') {
+            return '';
+        }
+
+        require_once BASE_PATH . '/app/Lib/Db.php';
+
+        $fb = \Db::firebird($this->cfg);
+        $st = $fb->prepare("SELECT FIRST 1 PARCEL_ID FROM GLS_ONLINE WHERE NR_NAD = ?");
+        $st->execute([$tracking]);
+        $row = $st->fetch(\PDO::FETCH_ASSOC) ?: [];
+
+        return trim((string)($row['PARCEL_ID'] ?? ''));
     }
 
     private function createParcel(SoapClient $hClient, string $session, array $order): object

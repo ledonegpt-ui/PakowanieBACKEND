@@ -1,0 +1,2 @@
+ALTER TABLE pak_order_items
+    MODIFY COLUMN quantity DECIMAL(12,3) NOT NULL DEFAULT 0.000;

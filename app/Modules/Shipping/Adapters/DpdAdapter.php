@@ -94,6 +94,11 @@ final class DpdAdapter implements ShippingAdapterInterface
         $auth->masterFid = $masterFid;
         $auth->password  = $password;
 
+        $existingWaybill = trim((string)($order['tracking_number'] ?? $order['nr_nadania'] ?? ''));
+        if ($existingWaybill !== '') {
+            return $this->fetchExistingLabelByWaybill($client, $auth, $order, $existingWaybill);
+        }
+
         // Generuj numer
         $result = $client->generatePackagesNumbersV4([
             'openUMLFeV3'               => $openUML,
@@ -115,8 +120,12 @@ final class DpdAdapter implements ShippingAdapterInterface
             throw new \RuntimeException('DPD: brak waybill w response');
         }
 
-        // Generuj etykietę - sprawdź jaki XML wysyła t3ko dla labels
-        $parcelDSP         = new \stdClass();
+        return $this->fetchExistingLabelByWaybill($client, $auth, $order, $waybill);
+    }
+
+    private function fetchExistingLabelByWaybill(\SoapClient $client, \stdClass $auth, array $order, string $waybill): array
+    {
+        $parcelDSP          = new \stdClass();
         $parcelDSP->waybill = $waybill;
 
         $packageDSP          = new \stdClass();

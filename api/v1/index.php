@@ -21,6 +21,7 @@ require_once __DIR__ . '/../../app/Modules/Screens/Controllers/ScreensController
 
 require_once __DIR__ . '/../../app/Modules/Picking/Controllers/PickingBatchesController.php';
 require_once __DIR__ . '/../../app/Modules/Picking/Controllers/PickingOrdersController.php';
+require_once __DIR__ . '/../../app/Modules/Picking/Controllers/PickingBacklogController.php';
 
 require_once __DIR__ . '/../../app/Modules/Packing/Controllers/PackingController.php';
 
@@ -172,6 +173,31 @@ $routes = [
         (new PickingOrdersController())->drop($params);
 
     }],
+
+    ['GET', '/api/v1/picking/backlog/summary', function (array $params): void {
+
+        (new PickingBacklogController())->summary($params);
+
+    }],
+
+    ['GET', '/api/v1/picking/backlog/products', function (array $params): void {
+
+        (new PickingBacklogController())->products($params);
+
+    }],
+
+    ['GET', '/api/v1/picking/backlog/orders', function (array $params): void {
+
+        (new PickingBacklogController())->orders($params);
+
+    }],
+
+    ['POST', '/api/v1/picking/backlog/resolve', function (array $params): void {
+
+        (new PickingBacklogController())->resolve($params);
+
+    }],
+
     ['POST', '/api/v1/picking/batches/{batchId}/abandon', function (array $params): void {
 
         (new PickingBatchesController())->abandon($params);

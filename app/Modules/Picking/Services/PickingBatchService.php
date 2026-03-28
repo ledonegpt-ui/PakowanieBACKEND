@@ -172,6 +172,10 @@ final class PickingBatchService
                 throw new RuntimeException('Item not found: ' . $itemId);
             }
 
+            if (in_array((string)$item['status'], array('missing', 'pre_missing'), true)) {
+                throw new RuntimeException('Item is blocked by missing flow: ' . $itemId);
+            }
+
             $this->repo->markItemPicked((int)$item['id'], (float)$item['expected_qty'], (int)$session['user_id']);
 
             $pendingCount = $this->repo->countPendingItemsForBatchOrder((int)$batchOrder['id']);
@@ -254,6 +258,7 @@ final class PickingBatchService
             }
 
             $this->repo->markItemMissing((int)$item['id'], $reason, (int)$session['user_id']);
+            $this->repo->markRemainingItemsPreMissing((int)$batchOrder['id'], (int)$item['id'], (int)$session['user_id']);
 
             $this->repo->createBacklogHold(
                 (string)$batchOrder['order_code'],
@@ -266,24 +271,14 @@ final class PickingBatchService
                 (float)$item['expected_qty'],
                 $holdType,
                 $reason,
-                (int)$session['user_id']
+                (int)$session['user_id'],
+                'draft'
             );
-
-            $mailSent = $this->notifyMissingByEmail($batch, $batchOrder, $item, $reason, $session);
-
-            $this->dropOrder(
-                (string)$batchOrder['order_code'],
-                'missing_item_backlog:' . (string)($item['product_code'] ?? ''),
-                $session,
-                $batch
-            );
-
-            $refill = $this->doRefill((int)$batch['id'], $session, false);
 
             $this->repo->logEvent(
                 (int)$batch['id'], 'item_missing',
                 (int)$batchOrder['id'], (int)$item['id'],
-                'Item missing -> backlog: ' . $item['product_code'],
+                'Item missing -> draft backlog: ' . $item['product_code'],
                 [
                     'batch_id'          => (int)$batch['id'],
                     'batch_order_id'    => $batchOrderId,
@@ -300,11 +295,11 @@ final class PickingBatchService
                     'expected_qty'      => (float)$item['expected_qty'],
                     'reason'            => $reason,
                     'hold_type'         => $holdType,
-                    'backlog_status'    => 'open',
+                    'backlog_status'    => 'draft',
                     'user_id'           => (int)$session['user_id'],
-                    'mail_sent'         => $mailSent,
-                    'order_status'      => 'backlog',
-                    'refilled'          => (int)($refill['refilled'] ?? 0),
+                    'mail_sent'         => false,
+                    'order_status'      => 'assigned',
+                    'workflow_state'    => 'missing_review',
                 ],
                 (int)$session['user_id']
             );
@@ -312,15 +307,15 @@ final class PickingBatchService
             $this->repo->commit();
 
             return [
-                'order_id'      => $batchOrderId,
-                'order_code'    => (string)$batchOrder['order_code'],
-                'item_id'       => $itemId,
-                'pak_item_id'   => (int)$item['pak_order_item_id'],
-                'status'        => 'missing',
-                'order_status'  => 'backlog',
-                'hold_type'     => $holdType,
-                'mail_sent'     => $mailSent,
-                'refilled'      => (int)($refill['refilled'] ?? 0),
+                'order_id'       => $batchOrderId,
+                'order_code'     => (string)$batchOrder['order_code'],
+                'item_id'        => $itemId,
+                'pak_item_id'    => (int)$item['pak_order_item_id'],
+                'status'         => 'missing',
+                'order_status'   => 'assigned',
+                'workflow_state' => 'missing_review',
+                'hold_type'      => $holdType,
+                'mail_sent'      => false,
             ];
         } catch (Throwable $e) {
             $this->repo->rollback();
@@ -462,38 +457,124 @@ final class PickingBatchService
 
     public function closeBatch(int $batchId, array $session): array
     {
-        $batch = $this->repo->findBatchById($batchId);
-        if (!$batch) {
-            throw new RuntimeException('Batch not found: ' . $batchId);
-        }
-        $this->assertBatchOwner($batch, $session);
+        $this->repo->beginTransaction();
+        try {
+            $batch = $this->repo->findBatchByIdForUpdate($batchId);
+            if (!$batch) {
+                throw new RuntimeException('Batch not found: ' . $batchId);
+            }
+            $this->assertBatchOwner($batch, $session);
 
-        if ($batch['status'] !== 'open') {
-            throw new RuntimeException('Batch is not open');
-        }
+            if ($batch['status'] !== 'open') {
+                throw new RuntimeException('Batch is not open');
+            }
 
-        $stats = $this->repo->getBatchStats($batchId);
-        if ((int)$stats['assigned_count'] > 0) {
-            throw new RuntimeException(
-                'Cannot close batch: ' . $stats['assigned_count'] . ' order(s) still assigned (not picked)'
+            $orders = $this->repo->getBatchOrders($batchId);
+            $backlogOrdersCount = 0;
+            $activatedDraftHolds = 0;
+
+            foreach ($orders as $order) {
+                $hasMissingFlow = false;
+                foreach (($order['items'] ?? array()) as $item) {
+                    if (in_array((string)$item['status'], array('missing', 'pre_missing'), true)) {
+                        $hasMissingFlow = true;
+                        break;
+                    }
+                }
+
+                if (!$hasMissingFlow) {
+                    continue;
+                }
+
+                $activatedDraftHolds += $this->repo->activateDraftBacklogHoldsForOrder((string)$order['order_code']);
+
+                foreach (($order['items'] ?? array()) as $item) {
+                    if ((string)$item['status'] !== 'missing') {
+                        continue;
+                    }
+
+                    $this->notifyMissingByEmail(
+                        $batch,
+                        $order,
+                        $item,
+                        (string)($item['missing_reason'] ?? ''),
+                        $session
+                    );
+                }
+
+                $this->dropOrder(
+                    (string)$order['order_code'],
+                    'missing_finalize',
+                    $session,
+                    $batch
+                );
+
+                $backlogOrdersCount++;
+            }
+
+            $stats = $this->repo->getBatchStats($batchId);
+            if ((int)$stats['assigned_count'] > 0) {
+                throw new RuntimeException(
+                    'Cannot close batch: ' . $stats['assigned_count'] . ' order(s) still assigned (not picked)'
+                );
+            }
+
+            $this->repo->closeBatch($batchId);
+
+            $this->repo->logEvent(
+                $batchId, 'batch_closed', null, null,
+                'Batch closed by operator',
+                [
+                    'batch_id'              => $batchId,
+                    'picked_count'          => (int)$stats['picked_count'],
+                    'dropped_count'         => (int)$stats['dropped_count'],
+                    'backlog_orders_count'  => $backlogOrdersCount,
+                    'activated_draft_holds' => $activatedDraftHolds,
+                    'user_id'               => (int)$session['user_id'],
+                ],
+                (int)$session['user_id']
             );
+
+            $this->repo->commit();
+
+            return [
+                'batch_id'              => $batchId,
+                'status'                => 'completed',
+                'backlog_orders_count'  => $backlogOrdersCount,
+                'activated_draft_holds' => $activatedDraftHolds,
+            ];
+        } catch (Throwable $e) {
+            $this->repo->rollback();
+            throw $e;
         }
+    }
 
-        $this->repo->closeBatch($batchId);
+    public function getBacklogSummary(array $session): array
+    {
+        return $this->repo->getBacklogSummary();
+    }
 
-        $this->repo->logEvent(
-            $batchId, 'batch_closed', null, null,
-            'Batch closed by operator',
-            [
-                'batch_id'      => $batchId,
-                'picked_count'  => (int)$stats['picked_count'],
-                'dropped_count' => (int)$stats['dropped_count'],
-                'user_id'       => (int)$session['user_id'],
-            ],
-            (int)$session['user_id']
-        );
+    public function getBacklogProducts(array $session): array
+    {
+        return $this->repo->getBacklogProducts();
+    }
 
-        return ['batch_id' => $batchId, 'status' => 'completed'];
+    public function resolveBacklogByItemKey(string $itemKey, array $session): array
+    {
+        $this->repo->beginTransaction();
+        try {
+            $result = $this->repo->resolveBacklogByItemKey($itemKey, (int)$session['user_id']);
+            $this->repo->commit();
+            return $result;
+        } catch (Throwable $e) {
+            $this->repo->rollback();
+            throw $e;
+        }
+    }
+
+    public function getBacklogOrdersByItemKey(string $itemKey, array $session): array
+    {
+        return $this->repo->getBacklogOrdersByItemKey($itemKey);
     }
 
     private function doRefill(int $batchId, array $session, bool $manageTransaction = true): array
@@ -604,6 +685,114 @@ final class PickingBatchService
             ],
             (int)$session['user_id']
         );
+    }
+
+    public function diagnoseOpenBatchUnavailable(string $carrierKey, string $packageMode): array
+    {
+        require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
+        $resolver = new ShippingMethodResolver($this->mapCfg);
+
+        $rows = $this->repo->getOpenOrdersDiagnosticRows();
+        if (empty($rows)) {
+            return [
+                'reason' => 'no_orders',
+                'carrier_key' => $carrierKey,
+                'package_mode' => $packageMode,
+                'counts' => [
+                    'status10_total' => 0,
+                    'carrier_match_total' => 0,
+                    'carrier_package_mode_match' => 0,
+                    'available_now' => 0,
+                    'backlog_blocked' => 0,
+                    'open_batch_blocked' => 0,
+                    'wrong_package_mode' => 0,
+                ],
+            ];
+        }
+
+        $orderCodes = array();
+        foreach ($rows as $row) {
+            $orderCodes[] = (string)$row['order_code'];
+        }
+        $orderPackageModes = $this->repo->getOrderPackageModes($orderCodes);
+
+        $carrierMatchTotal = 0;
+        $carrierPackageModeMatch = 0;
+        $availableNow = 0;
+        $backlogBlocked = 0;
+        $openBatchBlocked = 0;
+        $wrongPackageMode = 0;
+
+        foreach ($rows as $row) {
+            $resolved = $resolver->resolve([
+                'delivery_method' => (string)($row['delivery_method'] ?? ''),
+                'carrier_code'    => (string)($row['carrier_code'] ?? ''),
+                'courier_code'    => (string)($row['courier_code'] ?? ''),
+            ]);
+
+            if ((string)($resolved['menu_group'] ?? '') !== $carrierKey) {
+                continue;
+            }
+
+            $carrierMatchTotal++;
+
+            $orderCode = (string)$row['order_code'];
+            $orderPackageMode = isset($orderPackageModes[$orderCode])
+                ? (string)$orderPackageModes[$orderCode]
+                : 'unknown';
+
+            if ($orderPackageMode !== $packageMode) {
+                $wrongPackageMode++;
+                continue;
+            }
+
+            $carrierPackageModeMatch++;
+
+            $hasOpenBacklog = (int)($row['has_open_backlog'] ?? 0) === 1;
+            $inOpenBatch = (int)($row['in_open_batch'] ?? 0) === 1;
+
+            if ($hasOpenBacklog) {
+                $backlogBlocked++;
+                continue;
+            }
+
+            if ($inOpenBatch) {
+                $openBatchBlocked++;
+                continue;
+            }
+
+            $availableNow++;
+        }
+
+        $reason = 'no_available_orders';
+        if ($carrierMatchTotal === 0) {
+            $reason = 'no_orders_for_carrier';
+        } elseif ($carrierPackageModeMatch === 0) {
+            $reason = 'no_orders_for_package_mode';
+        } elseif ($availableNow > 0) {
+            $reason = 'available';
+        } elseif ($backlogBlocked > 0 && $openBatchBlocked === 0) {
+            $reason = 'only_backlog';
+        } elseif ($openBatchBlocked > 0 && $backlogBlocked === 0) {
+            $reason = 'all_reserved_in_open_batches';
+        } elseif ($backlogBlocked > 0 && $openBatchBlocked > 0) {
+            $reason = 'blocked_by_backlog_and_open_batches';
+        }
+
+        return [
+            'reason' => $reason,
+            'carrier_key' => $carrierKey,
+            'package_mode' => $packageMode,
+            'counts' => [
+                'status10_total' => count($rows),
+                'carrier_match_total' => $carrierMatchTotal,
+                'carrier_package_mode_match' => $carrierPackageModeMatch,
+                'available_now' => $availableNow,
+                'backlog_blocked' => $backlogBlocked,
+                'open_batch_blocked' => $openBatchBlocked,
+                'wrong_package_mode' => $wrongPackageMode,
+            ],
+        ];
     }
 
     private function selectOrdersForBatch(string $carrierKey, string $packageMode, array $excludedCodes, int $limit, string $selectionMode): array

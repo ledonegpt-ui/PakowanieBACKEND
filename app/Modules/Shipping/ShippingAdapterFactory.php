@@ -19,7 +19,7 @@ final class ShippingAdapterFactory
 
             case 'gls_api':
                 require_once BASE_PATH . '/app/Modules/Shipping/Adapters/GlsAdapter.php';
-                return new GlsAdapter();
+                return new GlsAdapter($cfg);
 
             case 'inpost_shipx':
             case 'inpost_api':

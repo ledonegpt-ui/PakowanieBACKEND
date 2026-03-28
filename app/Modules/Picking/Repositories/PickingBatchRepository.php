@@ -417,6 +417,41 @@ final class PickingBatchRepository
         return $result;
     }
 
+    public function getOpenOrdersDiagnosticRows(): array
+    {
+        $sql = "
+            SELECT
+                po.order_code,
+                po.delivery_method,
+                po.carrier_code,
+                po.courier_code,
+                CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM order_backlog_holds obh
+                        WHERE obh.order_code = po.order_code
+                          AND obh.status = 'open'
+                    ) THEN 1 ELSE 0
+                END AS has_open_backlog,
+                CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM picking_batch_orders pbo
+                        INNER JOIN picking_batches pb ON pb.id = pbo.batch_id
+                        WHERE pbo.order_code = po.order_code
+                          AND pbo.status = 'assigned'
+                          AND pb.status = 'open'
+                    ) THEN 1 ELSE 0
+                END AS in_open_batch
+            FROM pak_orders po
+            WHERE po.status = 10
+            ORDER BY po.imported_at ASC, po.order_code ASC
+        ";
+
+        $rows = $this->db->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+        return $rows ?: array();
+    }
+
     // -------------------------------------------------------------------------
     // BATCH ORDERS
     // -------------------------------------------------------------------------
@@ -525,13 +560,54 @@ final class PickingBatchRepository
         $stItems->execute($batchOrderIds);
         $items = $stItems->fetchAll(PDO::FETCH_ASSOC);
 
+        $orderCodes = array_map(static function (array $row): string {
+            return (string)$row['order_code'];
+        }, $orders);
+
+        $orderCodeByBatchOrderId = [];
+        foreach ($orders as $orderRow) {
+            $orderCodeByBatchOrderId[(int)$orderRow['id']] = (string)$orderRow['order_code'];
+        }
+
+        $holdsByOrderItemKey = [];
+        if (!empty($orderCodes)) {
+            $holdPlaceholders = implode(',', array_fill(0, count($orderCodes), '?'));
+            $sqlHolds = "
+            SELECT id, order_code, pak_order_item_id, hold_type, hold_reason, status
+            FROM order_backlog_holds
+            WHERE order_code IN ($holdPlaceholders)
+              AND status IN ('draft', 'open')
+            ORDER BY id DESC
+        ";
+            $stHolds = $this->db->prepare($sqlHolds);
+            $stHolds->execute($orderCodes);
+            $holds = $stHolds->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($holds as $hold) {
+                $holdKey = (string)$hold['order_code'] . '|' . (int)$hold['pak_order_item_id'];
+                if (isset($holdsByOrderItemKey[$holdKey])) {
+                    continue;
+                }
+                $holdsByOrderItemKey[$holdKey] = [
+                    'hold_type'      => $hold['hold_type'] !== null ? (string)$hold['hold_type'] : null,
+                    'hold_reason'    => $hold['hold_reason'] !== null ? (string)$hold['hold_reason'] : null,
+                    'backlog_status' => $hold['status'] !== null ? (string)$hold['status'] : null,
+                ];
+            }
+        }
+
         $itemsByBatchOrderId = [];
         foreach ($items as $item) {
             $subiektTowId = isset($item['subiekt_tow_id']) && $item['subiekt_tow_id'] !== null
                 ? (int)$item['subiekt_tow_id']
                 : null;
 
-            $itemsByBatchOrderId[(int)$item['batch_order_id']][] = [
+            $batchOrderId = (int)$item['batch_order_id'];
+            $orderCode = $orderCodeByBatchOrderId[$batchOrderId] ?? '';
+            $holdKey = $orderCode . '|' . (int)$item['pak_order_item_id'];
+            $holdInfo = $holdsByOrderItemKey[$holdKey] ?? null;
+
+            $itemsByBatchOrderId[$batchOrderId][] = [
                 'id'               => (int)$item['id'],
                 'pak_order_item_id'=> (int)$item['pak_order_item_id'],
                 'subiekt_tow_id'   => $subiektTowId,
@@ -546,6 +622,9 @@ final class PickingBatchRepository
                 'picked_qty'       => (float)$item['picked_qty'],
                 'status'           => (string)$item['status'],
                 'missing_reason'   => $item['missing_reason'],
+                'hold_type'        => $holdInfo['hold_type'] ?? null,
+                'hold_reason'      => $holdInfo['hold_reason'] ?? null,
+                'backlog_status'   => $holdInfo['backlog_status'] ?? null,
             ];
         }
 
@@ -763,6 +842,25 @@ final class PickingBatchRepository
         ]);
     }
 
+    public function markRemainingItemsPreMissing(int $batchOrderId, int $excludeItemId, int $userId): void
+    {
+        $sql = "
+            UPDATE picking_order_items
+            SET status = 'pre_missing',
+                updated_by_user_id = :user_id,
+                updated_at = NOW()
+            WHERE batch_order_id = :batch_order_id
+              AND id <> :exclude_item_id
+              AND status = 'pending'
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':batch_order_id' => $batchOrderId,
+            ':exclude_item_id'=> $excludeItemId,
+            ':user_id'        => $userId,
+        ]);
+    }
+
     public function createBacklogHold(
         string $orderCode,
         int $pakOrderItemId,
@@ -772,19 +870,20 @@ final class PickingBatchRepository
         float $missingQty,
         string $holdType,
         ?string $holdReason,
-        int $userId
+        int $userId,
+        string $status = 'draft'
     ): void {
         $check = $this->db->prepare("
             SELECT id
             FROM order_backlog_holds
             WHERE order_code = :order_code
               AND pak_order_item_id = :pak_order_item_id
-              AND status = 'open'
+              AND status IN ('draft', 'open')
             LIMIT 1
         ");
         $check->execute([
-            ':order_code'       => $orderCode,
-            ':pak_order_item_id'=> $pakOrderItemId,
+            ':order_code'        => $orderCode,
+            ':pak_order_item_id' => $pakOrderItemId,
         ]);
 
         if ($check->fetch(PDO::FETCH_ASSOC)) {
@@ -814,7 +913,7 @@ final class PickingBatchRepository
                 :missing_qty,
                 :hold_type,
                 :hold_reason,
-                'open',
+                :status,
                 :user_id,
                 NOW(),
                 NOW()
@@ -830,8 +929,25 @@ final class PickingBatchRepository
             ':missing_qty'       => $missingQty,
             ':hold_type'         => $holdType,
             ':hold_reason'       => $holdReason,
+            ':status'            => $status,
             ':user_id'           => $userId,
         ]);
+    }
+
+    public function activateDraftBacklogHoldsForOrder(string $orderCode): int
+    {
+        $sql = "
+            UPDATE order_backlog_holds
+            SET status = 'open',
+                updated_at = NOW()
+            WHERE order_code = :order_code
+              AND status = 'draft'
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':order_code' => $orderCode,
+        ]);
+        return (int)$st->rowCount();
     }
 
     // -------------------------------------------------------------------------
@@ -922,7 +1038,7 @@ final class PickingBatchRepository
 
             $aggregates[$aggregateKey]['total_expected_qty'] += $expectedQty;
             $aggregates[$aggregateKey]['total_picked_qty'] += $pickedQty;
-            if ($itemStatus === 'missing') {
+            if ($itemStatus === 'missing' || $itemStatus === 'pre_missing') {
                 $aggregates[$aggregateKey]['total_missing_qty'] += $expectedQty;
             }
             $aggregates[$aggregateKey]['status_counts'][$itemStatus] =
@@ -1039,6 +1155,275 @@ final class PickingBatchRepository
     }
 
 
+    public function getBacklogSummary(): array
+    {
+        $sql = "
+            SELECT
+                COUNT(*) AS open_holds,
+                COUNT(DISTINCT order_code) AS open_orders,
+                COUNT(DISTINCT
+                    CASE
+                        WHEN subiekt_tow_id IS NOT NULL THEN CONCAT('subiekt:', subiekt_tow_id)
+                        ELSE CONCAT('code:', COALESCE(product_code, ''))
+                    END
+                ) AS open_products
+            FROM order_backlog_holds
+            WHERE status = 'open'
+        ";
+        $row = $this->db->query($sql)->fetch(PDO::FETCH_ASSOC);
+        $summary = [
+            'open_holds'    => isset($row['open_holds']) ? (int)$row['open_holds'] : 0,
+            'open_orders'   => isset($row['open_orders']) ? (int)$row['open_orders'] : 0,
+            'open_products' => isset($row['open_products']) ? (int)$row['open_products'] : 0,
+            'by_type'       => [
+                'production' => 0,
+                'supplier'   => 0,
+                'other'      => 0,
+            ],
+        ];
+
+        $sqlTypes = "
+            SELECT hold_type, COUNT(*) AS cnt
+            FROM order_backlog_holds
+            WHERE status = 'open'
+            GROUP BY hold_type
+        ";
+        $rows = $this->db->query($sqlTypes)->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as $typeRow) {
+            $type = isset($typeRow['hold_type']) ? (string)$typeRow['hold_type'] : 'other';
+            $cnt  = isset($typeRow['cnt']) ? (int)$typeRow['cnt'] : 0;
+
+            if (!isset($summary['by_type'][$type])) {
+                $summary['by_type'][$type] = 0;
+            }
+            $summary['by_type'][$type] = $cnt;
+        }
+
+        return $summary;
+    }
+
+    public function getBacklogProducts(): array
+    {
+        $sql = "
+            SELECT
+                CASE
+                    WHEN subiekt_tow_id IS NOT NULL THEN CONCAT('subiekt:', subiekt_tow_id)
+                    ELSE CONCAT('code:', COALESCE(product_code, ''))
+                END AS item_key,
+                MAX(subiekt_tow_id) AS subiekt_tow_id,
+                MAX(product_code) AS product_code,
+                MAX(product_name) AS product_name,
+                COUNT(*) AS open_holds_count,
+                COUNT(DISTINCT order_code) AS open_orders_count,
+                SUM(missing_qty) AS total_missing_qty,
+                SUM(CASE WHEN hold_type = 'production' THEN 1 ELSE 0 END) AS production_count,
+                SUM(CASE WHEN hold_type = 'supplier' THEN 1 ELSE 0 END) AS supplier_count,
+                SUM(CASE WHEN hold_type = 'other' THEN 1 ELSE 0 END) AS other_count,
+                MIN(created_at) AS oldest_created_at,
+                MAX(created_at) AS latest_created_at
+            FROM order_backlog_holds
+            WHERE status = 'open'
+            GROUP BY
+                CASE
+                    WHEN subiekt_tow_id IS NOT NULL THEN CONCAT('subiekt:', subiekt_tow_id)
+                    ELSE CONCAT('code:', COALESCE(product_code, ''))
+                END
+            ORDER BY open_orders_count DESC, oldest_created_at ASC, item_key ASC
+        ";
+
+        $rows = $this->db->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+        $result = [];
+
+        foreach ($rows as $row) {
+            $result[] = [
+                'item_key'          => (string)$row['item_key'],
+                'subiekt_tow_id'    => $row['subiekt_tow_id'] !== null ? (int)$row['subiekt_tow_id'] : null,
+                'product_code'      => $row['product_code'] !== null ? (string)$row['product_code'] : null,
+                'product_name'      => (string)$row['product_name'],
+                'open_holds_count'  => (int)$row['open_holds_count'],
+                'open_orders_count' => (int)$row['open_orders_count'],
+                'total_missing_qty' => (float)$row['total_missing_qty'],
+                'by_type'           => [
+                    'production' => (int)$row['production_count'],
+                    'supplier'   => (int)$row['supplier_count'],
+                    'other'      => (int)$row['other_count'],
+                ],
+                'oldest_created_at' => $row['oldest_created_at'] !== null ? (string)$row['oldest_created_at'] : null,
+                'latest_created_at' => $row['latest_created_at'] !== null ? (string)$row['latest_created_at'] : null,
+            ];
+        }
+
+        return $result;
+    }
+
+    public function resolveBacklogByItemKey(string $itemKey, int $userId): array
+    {
+        $itemKey = trim($itemKey);
+        if ($itemKey === '') {
+            throw new RuntimeException('Missing item_key');
+        }
+
+        $where = '';
+        $params = [];
+
+        if (strpos($itemKey, 'subiekt:') === 0) {
+            $subiektTowId = (int)substr($itemKey, 8);
+            if ($subiektTowId <= 0) {
+                throw new RuntimeException('Invalid item_key: ' . $itemKey);
+            }
+
+            $where = "subiekt_tow_id = :subiekt_tow_id";
+            $params = [':subiekt_tow_id' => $subiektTowId];
+        } elseif (strpos($itemKey, 'code:') === 0) {
+            $productCode = trim(substr($itemKey, 5));
+            if ($productCode === '') {
+                throw new RuntimeException('Invalid item_key: ' . $itemKey);
+            }
+
+            $where = "subiekt_tow_id IS NULL AND product_code = :product_code";
+            $params = [':product_code' => $productCode];
+        } else {
+            throw new RuntimeException('Unsupported item_key: ' . $itemKey);
+        }
+
+        $sqlOrders = "
+            SELECT DISTINCT order_code
+            FROM order_backlog_holds
+            WHERE status = 'open'
+              AND " . $where;
+
+        $stOrders = $this->db->prepare($sqlOrders);
+        $stOrders->execute($params);
+        $orderCodes = $stOrders->fetchAll(PDO::FETCH_COLUMN);
+
+        if (empty($orderCodes)) {
+            return [
+                'item_key'             => $itemKey,
+                'resolved_holds'       => 0,
+                'touched_orders'       => 0,
+                'orders_released'      => 0,
+                'orders_still_blocked' => 0,
+            ];
+        }
+
+        $sqlUpdate = "
+            UPDATE order_backlog_holds
+            SET status = 'resolved',
+                resolved_at = NOW(),
+                resolved_by_user_id = :user_id,
+                updated_at = NOW()
+            WHERE status = 'open'
+              AND " . $where;
+
+        $updateParams = array_merge([':user_id' => $userId], $params);
+        $stUpdate = $this->db->prepare($sqlUpdate);
+        $stUpdate->execute($updateParams);
+        $resolvedHolds = (int)$stUpdate->rowCount();
+
+        $sqlRemain = "
+            SELECT COUNT(*)
+            FROM order_backlog_holds
+            WHERE order_code = :order_code
+              AND status = 'open'
+        ";
+        $stRemain = $this->db->prepare($sqlRemain);
+
+        $ordersReleased = 0;
+        $ordersStillBlocked = 0;
+
+        foreach ($orderCodes as $orderCode) {
+            $stRemain->execute([':order_code' => (string)$orderCode]);
+            $remaining = (int)$stRemain->fetchColumn();
+
+            if ($remaining === 0) {
+                $ordersReleased++;
+            } else {
+                $ordersStillBlocked++;
+            }
+        }
+
+        return [
+            'item_key'             => $itemKey,
+            'resolved_holds'       => $resolvedHolds,
+            'touched_orders'       => count($orderCodes),
+            'orders_released'      => $ordersReleased,
+            'orders_still_blocked' => $ordersStillBlocked,
+        ];
+    }
+
+    public function getBacklogOrdersByItemKey(string $itemKey): array
+    {
+        $itemKey = trim($itemKey);
+        if ($itemKey === '') {
+            throw new RuntimeException('Missing item_key');
+        }
+
+        $where = '';
+        $params = [];
+
+        if (strpos($itemKey, 'subiekt:') === 0) {
+            $subiektTowId = (int)substr($itemKey, 8);
+            if ($subiektTowId <= 0) {
+                throw new RuntimeException('Invalid item_key: ' . $itemKey);
+            }
+
+            $where = "subiekt_tow_id = :subiekt_tow_id";
+            $params = [':subiekt_tow_id' => $subiektTowId];
+        } elseif (strpos($itemKey, 'code:') === 0) {
+            $productCode = trim(substr($itemKey, 5));
+            if ($productCode === '') {
+                throw new RuntimeException('Invalid item_key: ' . $itemKey);
+            }
+
+            $where = "subiekt_tow_id IS NULL AND product_code = :product_code";
+            $params = [':product_code' => $productCode];
+        } else {
+            throw new RuntimeException('Unsupported item_key: ' . $itemKey);
+        }
+
+        $sql = "
+            SELECT
+                id,
+                order_code,
+                pak_order_item_id,
+                subiekt_tow_id,
+                product_code,
+                product_name,
+                missing_qty,
+                hold_type,
+                hold_reason,
+                status,
+                created_at
+            FROM order_backlog_holds
+            WHERE status = 'open'
+              AND " . $where . "
+            ORDER BY created_at ASC, id ASC
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute($params);
+        $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+        $result = [];
+        foreach ($rows as $row) {
+            $result[] = [
+                'hold_id'          => (int)$row['id'],
+                'order_code'       => (string)$row['order_code'],
+                'pak_order_item_id'=> (int)$row['pak_order_item_id'],
+                'subiekt_tow_id'   => $row['subiekt_tow_id'] !== null ? (int)$row['subiekt_tow_id'] : null,
+                'product_code'     => $row['product_code'] !== null ? (string)$row['product_code'] : null,
+                'product_name'     => (string)$row['product_name'],
+                'missing_qty'      => (float)$row['missing_qty'],
+                'hold_type'        => (string)$row['hold_type'],
+                'hold_reason'      => $row['hold_reason'] !== null ? (string)$row['hold_reason'] : null,
+                'status'           => (string)$row['status'],
+                'created_at'       => (string)$row['created_at'],
+            ];
+        }
+
+        return $result;
+    }
+
     public function logEvent(
         int $batchId,
         string $eventType,
@@ -1089,15 +1474,16 @@ final class PickingBatchRepository
 
     private function determineBreakdownStatus(array $statusCounts): string
     {
-        $pendingCount = (int)($statusCounts['pending'] ?? 0);
-        $pickedCount  = (int)($statusCounts['picked'] ?? 0);
-        $missingCount = (int)($statusCounts['missing'] ?? 0);
+        $pendingCount    = (int)($statusCounts['pending'] ?? 0);
+        $pickedCount     = (int)($statusCounts['picked'] ?? 0);
+        $missingCount    = (int)($statusCounts['missing'] ?? 0);
+        $preMissingCount = (int)($statusCounts['pre_missing'] ?? 0);
 
-        if ($pendingCount > 0 && $pickedCount === 0 && $missingCount === 0) {
+        if ($pendingCount > 0 && $pickedCount === 0 && $missingCount === 0 && $preMissingCount === 0) {
             return 'pending';
         }
 
-        if ($pickedCount > 0 && $pendingCount === 0 && $missingCount === 0) {
+        if ($pickedCount > 0 && $pendingCount === 0 && $missingCount === 0 && $preMissingCount === 0) {
             return 'picked';
         }
 

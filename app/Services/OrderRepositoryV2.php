@@ -301,8 +301,7 @@ final class OrderRepositoryV2
             $obId  = (int)$r['ob_Id'];
             $towId = (int)$r['ob_TowId'];
             $qtyF  = (float)$r['ob_Ilosc'];
-            $qty   = (int)round($qtyF);
-            if ($qty < 1 && $qtyF > 0) $qty = 1;
+            $qty   = round($qtyF, 1);
 
             $sym   = (string)($r['tw_Symbol'] ?? '');
             $name  = (string)($r['tw_Nazwa'] ?? '');

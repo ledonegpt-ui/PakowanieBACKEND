@@ -20,13 +20,39 @@ final class PickingBatchesController
     public function open(array $params = []): void
     {
         global $currentSession;
+        $body = Request::jsonBody();
+
         try {
-            $body    = Request::jsonBody();
             $service = $this->boot();
             $result  = $service->openBatch($currentSession, $body);
             ApiResponse::ok(['picking' => $result]);
         } catch (Throwable $e) {
-            ApiResponse::error($e->getMessage(), 400);
+            $details = array();
+
+            if (strpos((string)$e->getMessage(), 'No available orders for carrier_key:') === 0) {
+                try {
+                    $service = isset($service) ? $service : $this->boot();
+
+                    $packageMode = isset($currentSession['package_mode'])
+                        ? trim((string)$currentSession['package_mode'])
+                        : 'small';
+                    if (!in_array($packageMode, array('small', 'large'), true)) {
+                        $packageMode = 'small';
+                    }
+
+                    $carrierKey = trim((string)($body['carrier_key'] ?? ''));
+                    if ($carrierKey !== '') {
+                        $details = $service->diagnoseOpenBatchUnavailable($carrierKey, $packageMode);
+                    }
+                } catch (Throwable $inner) {
+                    $details = array(
+                        'reason' => 'diagnostic_failed',
+                        'message' => $inner->getMessage(),
+                    );
+                }
+            }
+
+            ApiResponse::error($e->getMessage(), 400, $details);
         }
     }
 

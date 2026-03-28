@@ -23,9 +23,21 @@ final class InPostAdapter implements ShippingAdapterInterface
 
         $shipmentType = (string)($resolved['shipment_type'] ?? '');
 
+        $existingTracking = trim((string)($order['tracking_number'] ?? $order['nr_nadania'] ?? ''));
+        if ($existingTracking !== '') {
+            try {
+                return $this->fetchExistingLabelByTracking($order, $existingTracking, $token);
+            } catch (Throwable $e) {
+                error_log('[InPostAdapter] Existing tracking fetch failed for order '
+                    . (string)($order['order_code'] ?? '')
+                    . ', tracking=' . $existingTracking
+                    . ': ' . $e->getMessage());
+            }
+        }
+
         // paczkomat vs kurier
         if ($this->isPaczkomat($shipmentType, (string)($order['delivery_method'] ?? ''))) {
-            return $this->generatePaczkomat($order, $token, $orgId);
+            return $this->generatePaczkomat($order, $resolved, $token, $orgId);
         } else {
             return $this->generateKurier($order, $token, $orgId);
         }
@@ -41,7 +53,30 @@ final class InPostAdapter implements ShippingAdapterInterface
         return false;
     }
 
-    private function generatePaczkomat(array $order, string $token, string $orgId): array
+    private function mapLockerTemplate(string $packageSize): string
+    {
+        $normalized = strtoupper(trim($packageSize));
+
+        switch ($normalized) {
+            case 'A':
+                return 'small';
+            case 'B':
+                return 'medium';
+            case 'C':
+                return 'large';
+            case 'D':
+                return 'xlarge';
+            case 'SMALL':
+            case 'MEDIUM':
+            case 'LARGE':
+            case 'XLARGE':
+                return strtolower($normalized);
+            default:
+                return 'small';
+        }
+    }
+
+    private function generatePaczkomat(array $order, array $resolved, string $token, string $orgId): array
     {
         $targetPoint = (string)($order['pickup_point_id'] ?? '');
         if (empty($targetPoint)) {
@@ -60,7 +95,7 @@ final class InPostAdapter implements ShippingAdapterInterface
                 'phone'        => $phone,
             ],
             'parcels' => [
-                'template' => strtolower($resolved['package_size'] ?? 'small'),
+                'template' => $this->mapLockerTemplate((string)($resolved['package_size'] ?? 'A')),
             ],
             'custom_attributes' => [
                 'sending_method' => 'dispatch_order',
@@ -189,6 +224,24 @@ final class InPostAdapter implements ShippingAdapterInterface
     // -------------------------------------------------------------------------
     // HELPERS
     // -------------------------------------------------------------------------
+
+    private function fetchExistingLabelByTracking(array $order, string $trackingNumber, string $token): array
+    {
+        $labelZpl  = $this->fetchLabel($trackingNumber, $token);
+        $fileToken = $this->saveLabel($labelZpl, (string)$order['order_code']);
+
+        return [
+            'tracking_number'      => $trackingNumber,
+            'external_shipment_id' => null,
+            'label_format'         => 'zpl',
+            'label_status'         => 'ok',
+            'file_token'           => $fileToken,
+            'file_path'            => $fileToken,
+            'raw_response'         => [
+                'source' => 'existing_tracking',
+            ],
+        ];
+    }
 
     private function fetchTrackingNumber(int $shipmentId, string $token): string
     {
