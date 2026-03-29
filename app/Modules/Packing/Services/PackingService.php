@@ -333,14 +333,18 @@ final class PackingService
             $this->repo->releaseBasketAfterPacking((int)$batchBasket['basket_id'], $batchId);
         }
 
+        $nextOrderCode = $nextOrder ? $nextOrder['order_code'] : null;
+        $batchCompleted = $nextOrder === null;
+
         return [
             'order_code'      => $orderCode,
             'status'          => 'completed',
             'tracking_number' => $package['tracking_number'],
-            'next_order_code' => $nextOrder ? $nextOrder['order_code'] : null,
-            'batch_completed' => $nextOrder === null,
+            'next_order_code' => $nextOrderCode,
+            'batch_completed' => $batchCompleted,
             'carrier_key'     => $carrierKey,
             'basket_no'       => $batchBasket && !empty($batchBasket['basket_no']) ? (int)$batchBasket['basket_no'] : null,
+            'next_action'     => $this->buildPostPackingAction($nextOrderCode, $batchCompleted, $session),
         ];
     }
 
@@ -565,6 +569,7 @@ final class PackingService
                 'order_code' => null,
                 'batch_done' => true,
                 'batch_id'   => $batchId,
+                'next_action' => $this->buildPostPackingAction(null, true, $session),
             ];
         }
 
@@ -572,12 +577,37 @@ final class PackingService
             'order_code' => $orderCode,
             'batch_done' => false,
             'batch_id'   => $batchId,
+            'next_action' => $this->buildPostPackingAction($orderCode, false, $session),
         ];
     }
 
     // -------------------------------------------------------------------------
     // HELPERS
     // -------------------------------------------------------------------------
+
+    private function buildPostPackingAction(?string $nextOrderCode, bool $batchCompleted, array $session): array
+    {
+        $workflowMode = isset($session['workflow_mode']) ? (string)$session['workflow_mode'] : 'integrated';
+        $workMode = isset($session['work_mode']) ? (string)$session['work_mode'] : 'picker';
+
+        if ($nextOrderCode !== null && $nextOrderCode !== '') {
+            return [
+                'type' => 'open_next_order',
+                'order_code' => $nextOrderCode,
+                'batch_completed' => false,
+                'workflow_mode' => $workflowMode,
+                'work_mode' => $workMode,
+            ];
+        }
+
+        return [
+            'type' => 'go_home',
+            'order_code' => null,
+            'batch_completed' => $batchCompleted,
+            'workflow_mode' => $workflowMode,
+            'work_mode' => $workMode,
+        ];
+    }
 
     private function buildSessionDetail(int $sessionId, array $order, array $resolved): array
     {
