@@ -34,7 +34,7 @@ final class StationsRepository
     public function findActiveSessionByToken(string $token): ?array
     {
         $sql = "
-            SELECT s.id AS session_id, s.station_id, s.workflow_mode, s.work_mode, s.package_mode, s.picking_batch_size, st.station_code, st.station_name, st.package_mode_default
+            SELECT s.id AS session_id, s.user_id, s.station_id, s.workflow_mode, s.work_mode, s.package_mode, s.picking_batch_size, st.station_code, st.station_name, st.package_mode_default
             FROM user_station_sessions s
             INNER JOIN stations st ON st.id = s.station_id
             WHERE s.session_token = :token
@@ -47,6 +47,83 @@ final class StationsRepository
         $row = $st->fetch(PDO::FETCH_ASSOC);
 
         return $row ?: null;
+    }
+
+    public function findActiveStationByCode(string $stationCode): ?array
+    {
+        $sql = "
+            SELECT
+                id,
+                station_code,
+                station_name,
+                printer_ip,
+                printer_name,
+                package_mode_default,
+                is_active
+            FROM stations
+            WHERE is_active = 1
+              AND station_code = :station_code
+            LIMIT 1
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute([':station_code' => $stationCode]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    }
+
+    public function updateSessionStation(int $sessionId, int $stationId, string $packageMode): void
+    {
+        $sql = "
+            UPDATE user_station_sessions
+            SET station_id = :station_id,
+                package_mode = :package_mode,
+                last_seen_at = NOW()
+            WHERE id = :session_id
+              AND is_active = 1
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':station_id' => $stationId,
+            ':package_mode' => $packageMode,
+            ':session_id' => $sessionId,
+        ]);
+    }
+
+    public function transferOpenBatchToStation(int $userId, int $stationId): void
+    {
+        $sql = "
+            UPDATE picking_batches
+            SET station_id = :station_id,
+                updated_at = NOW()
+            WHERE user_id = :user_id
+              AND status = 'open'
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':user_id' => $userId,
+            ':station_id' => $stationId,
+        ]);
+    }
+
+    public function transferOpenPackingSessionToStation(int $userId, int $stationId): void
+    {
+        $sql = "
+            UPDATE packing_sessions
+            SET station_id = :station_id,
+                updated_at = NOW()
+            WHERE user_id = :user_id
+              AND status = 'open'
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ':user_id' => $userId,
+            ':station_id' => $stationId,
+        ]);
     }
 
     public function updateSessionPackageMode(int $sessionId, string $packageMode): void

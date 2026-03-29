@@ -64,7 +64,10 @@ final class PickingBatchService
         }
 
         if ($workflowMode === 'split' && $workMode !== 'picker') {
-            throw new RuntimeException('Current user is not in picker mode');
+            return [
+                'status' => 'blocked',
+                'next_action' => $this->buildPickingRoleBlockedAction($workMode),
+            ];
         }
 
         $this->repo->beginTransaction();
@@ -244,6 +247,12 @@ final class PickingBatchService
                 'pak_item_id'  => (int)$item['pak_order_item_id'],
                 'status'       => 'picked',
                 'order_status' => $pendingCount === 0 ? 'picked' : 'assigned',
+                'next_action'  => $this->buildResumePickingAction(
+                    (int)$batch['id'],
+                    $pendingCount === 0
+                        ? 'Pozycja zakończona — kontynuuj zbieranie batcha'
+                        : 'Kontynuuj zbieranie batcha'
+                ),
             ];
         } catch (Throwable $e) {
             $this->repo->rollback();
@@ -343,6 +352,10 @@ final class PickingBatchService
                 'workflow_state' => 'missing_review',
                 'hold_type'      => $holdType,
                 'mail_sent'      => false,
+                'next_action'    => $this->buildResumePickingAction(
+                    (int)$batch['id'],
+                    'Brak zapisany — kontynuuj zbieranie batcha'
+                ),
             ];
         } catch (Throwable $e) {
             $this->repo->rollback();
@@ -375,10 +388,14 @@ final class PickingBatchService
             $this->repo->commit();
 
             return [
-                'order_id'   => $batchOrderId,
-                'order_code' => (string)$batchOrder['order_code'],
-                'status'     => 'dropped',
-                'reason'     => $reason,
+                'order_id'    => $batchOrderId,
+                'order_code'  => (string)$batchOrder['order_code'],
+                'status'      => 'dropped',
+                'reason'      => $reason,
+                'next_action' => $this->buildResumePickingAction(
+                    (int)$batch['id'],
+                    'Zamówienie odłożone — kontynuuj zbieranie batcha'
+                ),
             ];
         } catch (Throwable $e) {
             $this->repo->rollback();
@@ -438,6 +455,10 @@ final class PickingBatchService
                 'batch_id' => $batchId,
                 'selection_mode' => $selectionMode,
                 'status' => 'updated',
+                'next_action' => $this->buildResumePickingAction(
+                    $batchId,
+                    'Tryb doboru zaktualizowany — kontynuuj zbieranie batcha'
+                ),
             );
         } catch (Throwable $e) {
             $this->repo->rollback();
@@ -479,7 +500,13 @@ final class PickingBatchService
 
             $this->repo->commit();
 
-            return ['batch_id' => $batchId, 'status' => 'abandoned'];
+            require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
+            return [
+                'batch_id' => $batchId,
+                'status' => 'abandoned',
+                'next_action' => NextActionResolver::goHome('Batch porzucony — wróć do menu'),
+            ];
         } catch (Throwable $e) {
             $this->repo->rollback();
             throw $e;
@@ -546,9 +573,21 @@ final class PickingBatchService
 
             $stats = $this->repo->getBatchStats($batchId);
             if ((int)$stats['assigned_count'] > 0) {
-                throw new RuntimeException(
-                    'Cannot close batch: ' . $stats['assigned_count'] . ' order(s) still assigned (not picked)'
-                );
+                $assignedCount = (int)$stats['assigned_count'];
+                $this->repo->rollback();
+
+                return [
+                    'batch_id' => $batchId,
+                    'status' => 'blocked',
+                    'assigned_count' => $assignedCount,
+                    'next_action' => $this->buildPickingBlockedModalAction(
+                        'batch_has_unpicked_orders',
+                        'Nie można zamknąć batcha. Nadal są ' . $assignedCount . ' niepobrane zamówienia.',
+                        array(
+                            'assigned_count' => $assignedCount,
+                        )
+                    ),
+                ];
             }
 
             $workflowMode = isset($batch['workflow_mode']) ? trim((string)$batch['workflow_mode']) : 'integrated';
@@ -584,6 +623,7 @@ final class PickingBatchService
                 'status'                => 'completed',
                 'backlog_orders_count'  => $backlogOrdersCount,
                 'activated_draft_holds' => $activatedDraftHolds,
+                'next_action'           => $this->buildPostCloseBatchAction($batch, $session, $batchId),
             ];
         } catch (Throwable $e) {
             $this->repo->rollback();
@@ -1034,6 +1074,54 @@ final class PickingBatchService
         return $ids;
     }
 
+    private function buildResumePickingAction(int $batchId, ?string $message = null, array $extra = array()): array
+    {
+        require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+        return NextActionResolver::resumePicking($batchId, $message, $extra);
+    }
+
+    private function buildPickingBlockedModalAction(string $modal, string $message, array $extra = array()): array
+    {
+        require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+        return NextActionResolver::showModal($modal, $message, $extra);
+    }
+
+    private function buildPickingRoleBlockedAction(string $currentWorkMode): array
+    {
+        require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
+        return NextActionResolver::showModal(
+            'work_mode_conflict',
+            'Ta akcja jest dostępna tylko w trybie picker. Zmień tryb pracy, aby rozpocząć zbieranie.',
+            array(
+                'current_work_mode' => $currentWorkMode,
+                'required_work_mode' => 'picker',
+            )
+        );
+    }
+
+    private function buildPostCloseBatchAction(array $batch, array $session, int $batchId): array
+    {
+        require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
+        $workflowMode = isset($batch['workflow_mode']) ? trim((string)$batch['workflow_mode']) : '';
+        if ($workflowMode === '') {
+            $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : 'integrated';
+        }
+
+        if ($workflowMode === 'split') {
+            return NextActionResolver::showCarrierQueue('Batch zamknięty — wybierz kuriera do kolejnego zbierania');
+        }
+
+        return NextActionResolver::build(
+            'open_packing',
+            'Batch zamknięty — przejdź do pakowania',
+            array(
+                'batch_id' => $batchId,
+            )
+        );
+    }
+
     private function getBatchDetail(int $batchId): array
     {
         $batch    = $this->repo->findBatchById($batchId);
@@ -1050,6 +1138,7 @@ final class PickingBatchService
             ]),
             'orders'   => $orders,
             'products' => $products,
+            'next_action' => $this->buildResumePickingAction($batchId, 'Wznów zbieranie batcha'),
         ];
     }
 

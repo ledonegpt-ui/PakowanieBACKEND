@@ -16,6 +16,58 @@ final class StationsService
         return $this->repo->allActive();
     }
 
+    public function selectStation(?string $token, array $body): array
+    {
+        if (!$token) {
+            throw new RuntimeException('Missing bearer token');
+        }
+
+        $stationCode = trim((string)($body['station_code'] ?? ''));
+        if ($stationCode === '') {
+            throw new RuntimeException('Missing station_code');
+        }
+
+        $session = $this->repo->findActiveSessionByToken($token);
+        if (!$session) {
+            throw new RuntimeException('Active station session not found');
+        }
+
+        $station = $this->repo->findActiveStationByCode($stationCode);
+        if (!$station) {
+            throw new RuntimeException('Station not found');
+        }
+
+        $packageMode = isset($station['package_mode_default'])
+            ? trim((string)$station['package_mode_default'])
+            : 'small';
+        if (!in_array($packageMode, ['small', 'large'], true)) {
+            $packageMode = 'small';
+        }
+
+        $this->repo->transferOpenBatchToStation((int)$session['user_id'], (int)$station['id']);
+        $this->repo->transferOpenPackingSessionToStation((int)$session['user_id'], (int)$station['id']);
+        $this->repo->updateSessionStation((int)$session['session_id'], (int)$station['id'], $packageMode);
+
+        $updated = $this->repo->findActiveSessionByToken($token);
+        if (!$updated) {
+            throw new RuntimeException('Active station session not found after update');
+        }
+
+        return [
+            'station' => [
+                'user_id' => (int)$updated['user_id'],
+                'station_id' => (int)$updated['station_id'],
+                'station_code' => (string)$updated['station_code'],
+                'station_name' => (string)$updated['station_name'],
+                'workflow_mode' => (string)($updated['workflow_mode'] ?? 'integrated'),
+                'work_mode' => (string)($updated['work_mode'] ?? 'picker'),
+                'package_mode' => (string)$updated['package_mode'],
+                'package_mode_default' => (string)$updated['package_mode_default'],
+                'picking_batch_size' => (int)($updated['picking_batch_size'] ?? 0),
+            ],
+        ];
+    }
+
     public function updatePackageMode(?string $token, array $body): array
     {
         if (!$token) {
@@ -41,10 +93,14 @@ final class StationsService
 
         return [
             'station' => [
+                'user_id' => (int)$updated['user_id'],
                 'station_id' => (int)$updated['station_id'],
                 'station_code' => (string)$updated['station_code'],
+                'workflow_mode' => (string)($updated['workflow_mode'] ?? 'integrated'),
+                'work_mode' => (string)($updated['work_mode'] ?? 'picker'),
                 'package_mode' => (string)$updated['package_mode'],
                 'package_mode_default' => (string)$updated['package_mode_default'],
+                'picking_batch_size' => (int)($updated['picking_batch_size'] ?? 0),
             ],
         ];
     }
@@ -75,9 +131,10 @@ final class StationsService
 
         return [
             'station' => [
+                'user_id' => (int)$updated['user_id'],
                 'station_id' => (int)$updated['station_id'],
                 'station_code' => (string)$updated['station_code'],
-                'workflow_mode' => $workflowMode,
+                'workflow_mode' => (string)($updated['workflow_mode'] ?? $workflowMode),
                 'work_mode' => (string)($updated['work_mode'] ?? 'picker'),
                 'package_mode' => (string)$updated['package_mode'],
                 'package_mode_default' => (string)$updated['package_mode_default'],
@@ -111,6 +168,7 @@ final class StationsService
 
         return [
             'station' => [
+                'user_id' => (int)$updated['user_id'],
                 'station_id' => (int)$updated['station_id'],
                 'station_code' => (string)$updated['station_code'],
                 'workflow_mode' => (string)($updated['workflow_mode'] ?? 'integrated'),
@@ -147,8 +205,11 @@ final class StationsService
 
         return [
             'station' => [
+                'user_id' => (int)$updated['user_id'],
                 'station_id' => (int)$updated['station_id'],
                 'station_code' => (string)$updated['station_code'],
+                'workflow_mode' => (string)($updated['workflow_mode'] ?? 'integrated'),
+                'work_mode' => (string)($updated['work_mode'] ?? 'picker'),
                 'package_mode' => (string)$updated['package_mode'],
                 'package_mode_default' => (string)$updated['package_mode_default'],
                 'picking_batch_size' => (int)$updated['picking_batch_size'],

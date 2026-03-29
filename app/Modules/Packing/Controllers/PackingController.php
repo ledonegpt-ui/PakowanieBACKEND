@@ -80,21 +80,13 @@ final class PackingController
             $service = $this->boot();
             $result  = $service->openSession($orderCode, $currentSession);
 
-            $this->syncScreenPacking($currentSession, $result);
+            if (empty($result['status']) || $result['status'] !== 'blocked') {
+                $this->syncScreenPacking($currentSession, $result);
+            }
 
             ApiResponse::ok(['packing' => $result]);
         } catch (Throwable $e) {
-            $details = array();
-
-            if ((string)$e->getMessage() === 'Current user is not in packer mode') {
-                $details = array(
-                    'reason' => 'invalid_work_mode',
-                    'required_work_mode' => 'packer',
-                    'work_mode' => isset($currentSession['work_mode']) ? (string)$currentSession['work_mode'] : 'picker',
-                );
-            }
-
-            ApiResponse::error($e->getMessage(), 400, $details);
+            ApiResponse::error($e->getMessage(), 400);
         }
     }
 
@@ -156,6 +148,8 @@ final class PackingController
             $service = $this->boot();
             $result  = $service->cancelSession($orderCode, $currentSession);
 
+            $this->syncScreenIdle($currentSession);
+
             ApiResponse::ok(['packing' => $result]);
         } catch (Throwable $e) {
             ApiResponse::error($e->getMessage(), 400);
@@ -177,17 +171,7 @@ final class PackingController
 
             ApiResponse::ok(['packing' => $result]);
         } catch (Throwable $e) {
-            $details = array();
-
-            if ((string)$e->getMessage() === 'Current user is not in packer mode') {
-                $details = array(
-                    'reason' => 'invalid_work_mode',
-                    'required_work_mode' => 'packer',
-                    'work_mode' => isset($currentSession['work_mode']) ? (string)$currentSession['work_mode'] : 'picker',
-                );
-            }
-
-            ApiResponse::error($e->getMessage(), 400, $details);
+            ApiResponse::error($e->getMessage(), 400);
         }
     }
 
@@ -199,23 +183,13 @@ final class PackingController
             $service = $this->boot();
             $result  = $service->openNextReadyBatch($currentSession);
 
-            if (!empty($result['ready'])) {
+            if (!empty($result['ready']) && (empty($result['status']) || $result['status'] !== 'blocked')) {
                 $this->syncScreenPacking($currentSession, $result);
             }
 
             ApiResponse::ok(['packing' => $result]);
         } catch (Throwable $e) {
-            $details = array();
-
-            if ((string)$e->getMessage() === 'Current user is not in packer mode') {
-                $details = array(
-                    'reason' => 'invalid_work_mode',
-                    'required_work_mode' => 'packer',
-                    'work_mode' => isset($currentSession['work_mode']) ? (string)$currentSession['work_mode'] : 'picker',
-                );
-            }
-
-            ApiResponse::error($e->getMessage(), 400, $details);
+            ApiResponse::error($e->getMessage(), 400);
         }
     }
 

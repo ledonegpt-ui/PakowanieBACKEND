@@ -113,7 +113,11 @@ final class PackingService
         }
 
         if ($workflowMode === 'split' && $workMode !== 'packer') {
-            throw new RuntimeException('Current user is not in packer mode');
+            return [
+                'status' => 'blocked',
+                'order_code' => $orderCode,
+                'next_action' => $this->buildPackingRoleBlockedAction($workMode),
+            ];
         }
 
         $this->repo->beginTransaction();
@@ -344,7 +348,7 @@ final class PackingService
             'batch_completed' => $batchCompleted,
             'carrier_key'     => $carrierKey,
             'basket_no'       => $batchBasket && !empty($batchBasket['basket_no']) ? (int)$batchBasket['basket_no'] : null,
-            'next_action'     => $this->buildPostPackingAction($nextOrderCode, $batchCompleted, $session),
+            'next_action'     => $this->buildPostPackingAction($nextOrderCode, $batchCompleted, $session, $batchId),
         ];
     }
 
@@ -403,6 +407,7 @@ final class PackingService
             'status'             => 'cancelled',
             'reason'             => $reason,
             'cancelled_by_admin' => $isAdmin,
+            'next_action'        => $this->buildGoHomeAction('Pakowanie anulowane — wróć do menu'),
         ];
     }
 
@@ -423,7 +428,15 @@ final class PackingService
         }
 
         if ($workflowMode === 'split' && $workMode !== 'packer') {
-            throw new RuntimeException('Current user is not in packer mode');
+            return [
+                'batch_id' => null,
+                'basket_id' => null,
+                'basket_no' => null,
+                'package_mode' => isset($session['package_mode']) ? trim((string)$session['package_mode']) : 'small',
+                'ready' => false,
+                'reason' => 'wrong_work_mode',
+                'next_action' => $this->buildPackingRoleBlockedAction($workMode),
+            ];
         }
 
         $packageMode = isset($session['package_mode']) ? trim((string)$session['package_mode']) : 'small';
@@ -455,6 +468,28 @@ final class PackingService
 
     public function openNextReadyBatch(array $session): array
     {
+        $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : 'integrated';
+        if (!in_array($workflowMode, ['integrated', 'split'], true)) {
+            $workflowMode = 'integrated';
+        }
+
+        $workMode = isset($session['work_mode']) ? trim((string)$session['work_mode']) : 'picker';
+        if (!in_array($workMode, ['picker', 'packer'], true)) {
+            $workMode = 'picker';
+        }
+
+        if ($workflowMode === 'split' && $workMode !== 'packer') {
+            return [
+                'ready' => false,
+                'reason' => 'wrong_work_mode',
+                'batch_id' => null,
+                'basket_id' => null,
+                'basket_no' => null,
+                'order_code' => null,
+                'next_action' => $this->buildPackingRoleBlockedAction($workMode),
+            ];
+        }
+
         // Jesli user ma juz otwarta sesje packingu - zwroc ja zamiast szukac nowego koszyka
         $existingSession = $this->repo->findOpenSessionWithDetails((int)$session['user_id']);
         if ($existingSession) {
@@ -484,14 +519,17 @@ final class PackingService
                 ];
             }
 
+            $existingBatchId = (int)($existingSession['picking_batch_id'] ?? 0);
+
             return [
                 'ready'             => true,
                 'resumed'           => true,
                 'auto_loaded_batch' => true,
-                'batch_id'          => (int)($existingSession['picking_batch_id'] ?? 0),
+                'batch_id'          => $existingBatchId,
                 'basket_id'         => $basket ? $basket['basket_id'] : null,
                 'basket_no'         => $basket ? $basket['basket_no'] : null,
                 'order_code'        => $orderCode,
+                'next_action'       => $this->buildResumePackingAction($orderCode, $existingBatchId, 'Wznawiam otwartą sesję pakowania'),
                 'session'           => [
                     'id'               => $sessionId,
                     'session_code'     => (string)$existingSession['session_code'],
@@ -523,13 +561,16 @@ final class PackingService
 
         $nextBatch = $this->getNextReadyBatch($session);
         if (empty($nextBatch['ready']) || empty($nextBatch['batch_id'])) {
+            $reason = $nextBatch['reason'] ?? 'no_ready_baskets';
+
             return [
                 'ready' => false,
-                'reason' => $nextBatch['reason'] ?? 'no_ready_baskets',
+                'reason' => $reason,
                 'batch_id' => null,
                 'basket_id' => null,
                 'basket_no' => null,
                 'order_code' => null,
+                'next_action' => $this->buildNoReadyBatchAction($reason),
             ];
         }
 
@@ -544,6 +585,7 @@ final class PackingService
                 'basket_id' => (int)$nextBatch['basket_id'],
                 'basket_no' => (int)$nextBatch['basket_no'],
                 'order_code' => null,
+                'next_action' => $this->buildNoReadyBatchAction('no_orders_in_ready_batch'),
             ];
         }
 
@@ -552,6 +594,7 @@ final class PackingService
         $result['batch_id'] = $batchId;
         $result['basket_id'] = (int)$nextBatch['basket_id'];
         $result['basket_no'] = (int)$nextBatch['basket_no'];
+        $result['next_action'] = $this->buildResumePackingAction($orderCode, $batchId, 'Znajdź koszyk do zapakowania');
 
         return $result;
     }
@@ -569,7 +612,7 @@ final class PackingService
                 'order_code' => null,
                 'batch_done' => true,
                 'batch_id'   => $batchId,
-                'next_action' => $this->buildPostPackingAction(null, true, $session),
+                'next_action' => $this->buildPostPackingAction(null, true, $session, $batchId),
             ];
         }
 
@@ -577,7 +620,7 @@ final class PackingService
             'order_code' => $orderCode,
             'batch_done' => false,
             'batch_id'   => $batchId,
-            'next_action' => $this->buildPostPackingAction($orderCode, false, $session),
+            'next_action' => $this->buildPostPackingAction($orderCode, false, $session, $batchId),
         ];
     }
 
@@ -585,28 +628,82 @@ final class PackingService
     // HELPERS
     // -------------------------------------------------------------------------
 
-    private function buildPostPackingAction(?string $nextOrderCode, bool $batchCompleted, array $session): array
+    private function buildPostPackingAction(?string $nextOrderCode, bool $batchCompleted, array $session, int $batchId = 0): array
     {
-        $workflowMode = isset($session['workflow_mode']) ? (string)$session['workflow_mode'] : 'integrated';
-        $workMode = isset($session['work_mode']) ? (string)$session['work_mode'] : 'picker';
-
         if ($nextOrderCode !== null && $nextOrderCode !== '') {
-            return [
-                'type' => 'open_next_order',
-                'order_code' => $nextOrderCode,
-                'batch_completed' => false,
-                'workflow_mode' => $workflowMode,
-                'work_mode' => $workMode,
-            ];
+            return $this->buildResumePackingAction(
+                $nextOrderCode,
+                $batchId,
+                'Przejdź do kolejnego zamówienia do pakowania',
+                array(
+                    'batch_completed' => false,
+                )
+            );
         }
 
-        return [
-            'type' => 'go_home',
-            'order_code' => null,
-            'batch_completed' => $batchCompleted,
-            'workflow_mode' => $workflowMode,
-            'work_mode' => $workMode,
-        ];
+        return $this->buildGoHomeAction(
+            $batchCompleted ? 'Batch pakowania zakończony' : null,
+            array(
+                'batch_completed' => $batchCompleted,
+                'batch_id' => $batchId > 0 ? $batchId : null,
+            )
+        );
+    }
+
+    private function buildResumePackingAction(string $orderCode, int $batchId, ?string $message = null, array $extra = array()): array
+    {
+        require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
+        $extra = array_merge(
+            array(
+                'batch_id' => $batchId > 0 ? $batchId : null,
+            ),
+            $extra
+        );
+
+        return NextActionResolver::resumePacking($orderCode, $batchId > 0 ? $batchId : 0, $message, $extra);
+    }
+
+    private function buildGoHomeAction(?string $message = null, array $extra = array()): array
+    {
+        require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
+        return NextActionResolver::build('go_home', $message, $extra);
+    }
+
+    private function buildPackingRoleBlockedAction(string $currentWorkMode): array
+    {
+        require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
+        return NextActionResolver::showModal(
+            'work_mode_conflict',
+            'Ta akcja jest dostępna tylko w trybie packer. Zmień tryb pracy, aby rozpocząć pakowanie.',
+            array(
+                'current_work_mode' => $currentWorkMode,
+                'required_work_mode' => 'packer',
+            )
+        );
+    }
+
+    private function buildNoReadyBatchAction(string $reason): array
+    {
+        require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
+        $message = 'Brak gotowych koszyków, poczekaj na zbieracza';
+        $modal = 'no_ready_baskets';
+
+        if ($reason === 'no_orders_in_ready_batch') {
+            $message = 'Nie znaleziono zamówień do pakowania w gotowym koszyku';
+            $modal = 'no_ready_orders';
+        }
+
+        return NextActionResolver::showModal(
+            $modal,
+            $message,
+            array(
+                'reason' => $reason,
+            )
+        );
     }
 
     private function buildSessionDetail(int $sessionId, array $order, array $resolved): array
