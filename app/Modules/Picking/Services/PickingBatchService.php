@@ -581,10 +581,13 @@ final class PickingBatchService
                     'status' => 'blocked',
                     'assigned_count' => $assignedCount,
                     'next_action' => $this->buildPickingBlockedModalAction(
-                        'batch_has_unpicked_orders',
+                        'batch_has_unpicked',
                         'Nie można zamknąć batcha. Nadal są ' . $assignedCount . ' niepobrane zamówienia.',
                         array(
                             'assigned_count' => $assignedCount,
+                            'batch_id' => $batchId,
+                            'workflow_mode' => isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : null,
+                            'work_mode' => isset($session['work_mode']) ? trim((string)$session['work_mode']) : null,
                         )
                     ),
                 ];
@@ -1077,12 +1080,14 @@ final class PickingBatchService
     private function buildResumePickingAction(int $batchId, ?string $message = null, array $extra = array()): array
     {
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
         return NextActionResolver::resumePicking($batchId, $message, $extra);
     }
 
     private function buildPickingBlockedModalAction(string $modal, string $message, array $extra = array()): array
     {
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
+
         return NextActionResolver::showModal($modal, $message, $extra);
     }
 
@@ -1090,12 +1095,10 @@ final class PickingBatchService
     {
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
 
-        return NextActionResolver::showModal(
-            'work_mode_conflict',
+        return NextActionResolver::goHome(
             'Ta akcja jest dostępna tylko w trybie picker. Zmień tryb pracy, aby rozpocząć zbieranie.',
             array(
-                'current_work_mode' => $currentWorkMode,
-                'required_work_mode' => 'picker',
+                'work_mode' => $currentWorkMode,
             )
         );
     }
@@ -1105,23 +1108,32 @@ final class PickingBatchService
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
 
         $workflowMode = isset($batch['workflow_mode']) ? trim((string)$batch['workflow_mode']) : '';
-        if ($workflowMode === '') {
+        if ($workflowMode === '' ) {
             $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : 'integrated';
         }
 
+        $workMode = isset($session['work_mode']) ? trim((string)$session['work_mode']) : 'picker';
+
         if ($workflowMode === 'split') {
-            return NextActionResolver::showCarrierQueue('Batch zamknięty — wybierz kuriera do kolejnego zbierania');
+            return NextActionResolver::showCarrierQueue(
+                'Batch zamknięty — wybierz kuriera do kolejnego zbierania',
+                array(
+                    'workflow_mode' => $workflowMode,
+                    'work_mode' => $workMode,
+                )
+            );
         }
 
-        return NextActionResolver::build(
-            'open_packing',
+        return NextActionResolver::openPacking(
+            $batchId,
+            null,
             'Batch zamknięty — przejdź do pakowania',
             array(
-                'batch_id' => $batchId,
+                'workflow_mode' => $workflowMode,
+                'work_mode' => $workMode,
             )
         );
     }
-
     private function getBatchDetail(int $batchId): array
     {
         $batch    = $this->repo->findBatchById($batchId);

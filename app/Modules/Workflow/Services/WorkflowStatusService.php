@@ -20,11 +20,15 @@ final class WorkflowStatusService
         require_once BASE_PATH . '/app/Lib/Db.php';
         require_once BASE_PATH . '/app/Modules/Packing/Repositories/PackingRepository.php';
         require_once BASE_PATH . '/app/Modules/Picking/Repositories/PickingBatchRepository.php';
+        require_once BASE_PATH . '/app/Modules/Carriers/Repositories/CarriersRepository.php';
+        require_once BASE_PATH . '/app/Modules/Carriers/Services/CarriersService.php';
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
 
-        $db          = Db::mysql($this->cfg);
-        $packingRepo = new PackingRepository($db);
-        $pickingRepo = new PickingBatchRepository($db);
+        $db           = Db::mysql($this->cfg);
+        $packingRepo  = new PackingRepository($db);
+        $pickingRepo  = new PickingBatchRepository($db);
+        $carriersRepo = new CarriersRepository($db);
+        $carriersSvc  = new CarriersService($carriersRepo, $this->cfg['shipping_method_map'] ?? array());
 
         $userId    = (int)$currentSession['user_id'];
         $stationId = (int)$currentSession['station_id'];
@@ -44,114 +48,153 @@ final class WorkflowStatusService
         }
 
         // ----------------------------------------------------------------
-        // 1. Packing otwarty
+        // 1. Otwarta sesja packingu
         // ----------------------------------------------------------------
         $openPacking = $packingRepo->findOpenSessionForUser($userId);
         if ($openPacking) {
-            if ($workflowMode === 'split' && $workMode !== 'packer') {
-                $workflow = array(
-                    'action' => 'go_home',
-                    'message' => 'Masz otwartą sesję pakowania, ale aktualnie pracujesz jako picker',
-                );
+            $sameStation = (int)$openPacking['station_id'] === $stationId;
 
+            $workflow = array(
+                'action'        => 'resume_packing',
+                'order_code'    => (string)$openPacking['order_code'],
+                'batch_id'      => (int)$openPacking['picking_batch_id'],
+                'station_id'    => (int)$openPacking['station_id'],
+                'same_station'  => $sameStation,
+                'workflow_mode' => $workflowMode,
+                'work_mode'     => $workMode,
+                'message'       => 'Masz otwartą sesję pakowania: ' . $openPacking['order_code'],
+            );
+
+            if ($workflowMode === 'split' && $workMode !== 'packer') {
                 return array(
                     'workflow' => $workflow,
-                    'next_action' => NextActionResolver::showModal(
-                        'work_mode_conflict',
-                        'Masz otwartą sesję pakowania. Zmień tryb pracy na packer, aby ją wznowić.',
+                    'next_action' => NextActionResolver::goHome(
+                        'Masz otwartą sesję pakowania, ale aktualnie pracujesz jako picker',
                         array(
-                            'current_work_mode' => $workMode,
-                            'required_work_mode' => 'packer',
-                            'order_code' => (string)$openPacking['order_code'],
-                            'batch_id' => (int)$openPacking['picking_batch_id'],
+                            'workflow_mode' => $workflowMode,
+                            'work_mode'     => $workMode,
                         )
                     ),
                 );
             }
 
-            $workflow = array(
-                'action'       => 'resume_packing',
-                'order_code'   => $openPacking['order_code'],
-                'batch_id'     => (int)$openPacking['picking_batch_id'],
-                'station_id'   => (int)$openPacking['station_id'],
-                'same_station' => (int)$openPacking['station_id'] === $stationId,
-                'message'      => 'Masz otwartą sesję pakowania: ' . $openPacking['order_code'],
-            );
+            if (!$sameStation) {
+                return array(
+                    'workflow' => $workflow,
+                    'next_action' => NextActionResolver::showModal(
+                        'different_station',
+                        'Zamówienie jest przypisane do innej stacji',
+                        array(
+                            'batch_id'      => (int)$openPacking['picking_batch_id'],
+                            'order_code'    => (string)$openPacking['order_code'],
+                            'workflow_mode' => $workflowMode,
+                            'work_mode'     => $workMode,
+                            'same_station'  => false,
+                        )
+                    ),
+                );
+            }
 
             return array(
                 'workflow' => $workflow,
-                'next_action' => NextActionResolver::fromLegacyWorkflowAction($workflow),
+                'next_action' => NextActionResolver::resumePacking(
+                    (string)$openPacking['order_code'],
+                    (int)$openPacking['picking_batch_id'],
+                    'Wznów pakowanie',
+                    array(
+                        'workflow_mode' => $workflowMode,
+                        'work_mode'     => $workMode,
+                        'same_station'  => true,
+                    )
+                ),
             );
         }
 
         // ----------------------------------------------------------------
-        // 2. Picking otwarty
+        // 2. Otwarty batch pickingu
         // ----------------------------------------------------------------
         $openPicking = $pickingRepo->findOpenBatchForUser($userId);
         if ($openPicking) {
-            if ($workflowMode === 'split' && $workMode !== 'picker') {
-                $workflow = array(
-                    'action' => 'go_home',
-                    'message' => 'Masz otwarty batch zbierania, ale aktualnie pracujesz jako packer',
-                );
+            $workflow = array(
+                'action'        => 'resume_picking',
+                'batch_id'      => (int)$openPicking['id'],
+                'carrier_key'   => (string)$openPicking['carrier_key'],
+                'workflow_mode' => $workflowMode,
+                'work_mode'     => $workMode,
+                'message'       => 'Masz otwarty batch zbierania: ' . $openPicking['batch_code'],
+            );
 
+            if ($workflowMode === 'split' && $workMode !== 'picker') {
                 return array(
                     'workflow' => $workflow,
-                    'next_action' => NextActionResolver::showModal(
-                        'work_mode_conflict',
-                        'Masz otwarty batch zbierania. Zmień tryb pracy na picker, aby go wznowić.',
+                    'next_action' => NextActionResolver::goHome(
+                        'Masz otwarty batch zbierania, ale aktualnie pracujesz jako packer',
                         array(
-                            'current_work_mode' => $workMode,
-                            'required_work_mode' => 'picker',
-                            'batch_id' => (int)$openPicking['id'],
-                            'carrier_key' => (string)$openPicking['carrier_key'],
+                            'workflow_mode' => $workflowMode,
+                            'work_mode'     => $workMode,
                         )
                     ),
                 );
             }
 
-            $workflow = array(
-                'action'      => 'resume_picking',
-                'batch_id'    => (int)$openPicking['id'],
-                'carrier_key' => $openPicking['carrier_key'],
-                'message'     => 'Masz otwarty batch zbierania: ' . $openPicking['batch_code'],
-            );
-
             return array(
                 'workflow' => $workflow,
-                'next_action' => NextActionResolver::fromLegacyWorkflowAction($workflow),
+                'next_action' => NextActionResolver::resumePicking(
+                    (int)$openPicking['id'],
+                    'Wznów zbieranie batcha',
+                    array(
+                        'workflow_mode' => $workflowMode,
+                        'work_mode'     => $workMode,
+                    )
+                ),
             );
         }
 
         // ----------------------------------------------------------------
-        // 3. Picking zakończony, packing jeszcze nie ruszył
+        // 3. Batch gotowy do pakowania
         // ----------------------------------------------------------------
         $pendingPackingBatch = $pickingRepo->findCompletedBatchWithPendingPacking($userId);
         if ($pendingPackingBatch) {
             if ($workflowMode === 'split' && $workMode === 'picker') {
                 $workflow = array(
-                    'action'  => 'start_picking',
-                    'message' => 'Masz rolę pickera — wybierz kuriera do kolejnego zbierania',
+                    'action'        => 'start_picking',
+                    'workflow_mode' => $workflowMode,
+                    'work_mode'     => $workMode,
+                    'message'       => 'Masz rolę pickera — wybierz kuriera do kolejnego zbierania',
                 );
 
                 return array(
                     'workflow' => $workflow,
                     'next_action' => NextActionResolver::showCarrierQueue(
-                        'Batch jest gotowy do pakowania przez packera. Ty możesz rozpocząć kolejne zbieranie.'
+                        'Batch jest gotowy do pakowania przez packera. Ty możesz rozpocząć kolejne zbieranie.',
+                        array(
+                            'workflow_mode' => $workflowMode,
+                            'work_mode'     => $workMode,
+                        )
                     ),
                 );
             }
 
             $workflow = array(
-                'action'      => 'start_packing',
-                'batch_id'    => (int)$pendingPackingBatch['id'],
-                'carrier_key' => $pendingPackingBatch['carrier_key'],
-                'message'     => 'Picking zakończony — spakuj zamówienia z batcha ' . $pendingPackingBatch['batch_code'],
+                'action'        => 'start_packing',
+                'batch_id'      => (int)$pendingPackingBatch['id'],
+                'workflow_mode' => $workflowMode,
+                'work_mode'     => $workMode,
+                'message'       => 'Picking zakończony — spakuj zamówienia z batcha ' . $pendingPackingBatch['batch_code'],
             );
 
             return array(
                 'workflow' => $workflow,
-                'next_action' => NextActionResolver::fromLegacyWorkflowAction($workflow),
+                'next_action' => NextActionResolver::openPacking(
+                    (int)$pendingPackingBatch['id'],
+                    null,
+                    'Znajdź koszyk do zapakowania',
+                    array(
+                        'workflow_mode' => $workflowMode,
+                        'work_mode'     => $workMode,
+                        'same_station'  => true,
+                    )
+                ),
             );
         }
 
@@ -160,27 +203,83 @@ final class WorkflowStatusService
         // ----------------------------------------------------------------
         if ($workflowMode === 'split' && $workMode === 'packer') {
             $workflow = array(
-                'action'  => 'start_packing',
-                'message' => 'Pracujesz jako packer — sprawdź gotowe koszyki do pakowania',
+                'action'        => 'start_packing',
+                'workflow_mode' => $workflowMode,
+                'work_mode'     => $workMode,
+                'message'       => 'Pracujesz jako packer — sprawdź gotowe koszyki do pakowania',
             );
 
             return array(
                 'workflow' => $workflow,
-                'next_action' => NextActionResolver::openPacking('Znajdź koszyk do zapakowania'),
+                'next_action' => NextActionResolver::openPacking(
+                    null,
+                    null,
+                    'Znajdź koszyk do zapakowania',
+                    array(
+                        'workflow_mode' => $workflowMode,
+                        'work_mode'     => $workMode,
+                        'same_station'  => null,
+                    )
+                ),
+            );
+        }
+
+        if ($workflowMode === 'split' && $workMode === 'picker') {
+            $workflow = array(
+                'action'        => 'start_picking',
+                'workflow_mode' => $workflowMode,
+                'work_mode'     => $workMode,
+                'message'       => 'Brak otwartych sesji — wybierz kuriera',
+            );
+
+            return array(
+                'workflow' => $workflow,
+                'next_action' => NextActionResolver::showCarrierQueue(
+                    'Pracujesz jako picker — wybierz kuriera do zbierania',
+                    array(
+                        'workflow_mode' => $workflowMode,
+                        'work_mode'     => $workMode,
+                    )
+                ),
+            );
+        }
+
+        $carrierQueue = $carriersSvc->listQueueSummary();
+        if (!empty($carrierQueue)) {
+            $workflow = array(
+                'action'        => 'start_picking',
+                'workflow_mode' => $workflowMode,
+                'work_mode'     => $workMode,
+                'message'       => 'Wybierz kuriera do rozpoczęcia zbierania',
+            );
+
+            return array(
+                'workflow' => $workflow,
+                'next_action' => NextActionResolver::showCarrierQueue(
+                    'Wybierz kuriera do rozpoczęcia zbierania',
+                    array(
+                        'workflow_mode' => $workflowMode,
+                        'work_mode'     => $workMode,
+                    )
+                ),
             );
         }
 
         $workflow = array(
-            'action'  => 'start_picking',
-            'message' => 'Brak otwartych sesji — wybierz kuriera',
+            'action'        => 'go_home',
+            'workflow_mode' => $workflowMode,
+            'work_mode'     => $workMode,
+            'message'       => 'Wróć do menu',
         );
 
         return array(
             'workflow' => $workflow,
-            'next_action' => NextActionResolver::showCarrierQueue(
-                $workflowMode === 'split'
-                    ? 'Pracujesz jako picker — wybierz kuriera do zbierania'
-                    : 'Wybierz kuriera, aby rozpocząć workflow'
+            'next_action' => NextActionResolver::goHome(
+                'Wróć do menu',
+                array(
+                    'workflow_mode' => $workflowMode,
+                    'work_mode'     => $workMode,
+                )
             ),
         );
     }

@@ -342,6 +342,15 @@ final class PickingBatchRepository
                   WHERE obh.order_code = pak_orders.order_code
                     AND obh.status = 'open'
               )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM picking_batch_orders pbo_done
+                  JOIN picking_batches pb_done
+                    ON pb_done.id = pbo_done.batch_id
+                  WHERE pbo_done.order_code = pak_orders.order_code
+                    AND pbo_done.status = 'picked'
+                    AND pb_done.status = 'completed'
+              )
               $excludeClause
             ORDER BY imported_at ASC, order_code ASC
             LIMIT " . (int)$margin . "
@@ -421,6 +430,15 @@ final class PickingBatchRepository
                   FROM order_backlog_holds obh
                   WHERE obh.order_code = pak_orders.order_code
                     AND obh.status = 'open'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM picking_batch_orders pbo_done
+                  JOIN picking_batches pb_done
+                    ON pb_done.id = pbo_done.batch_id
+                  WHERE pbo_done.order_code = pak_orders.order_code
+                    AND pbo_done.status = 'picked'
+                    AND pb_done.status = 'completed'
               )
               $excludeClause
             ORDER BY courier_priority DESC, imported_at ASC, order_code ASC
@@ -1433,7 +1451,7 @@ final class PickingBatchRepository
             SELECT COUNT(*)
             FROM order_backlog_holds
             WHERE order_code = :order_code
-              AND pb.status = 'open'
+              AND status = 'open'
         ";
         $stRemain = $this->db->prepare($sqlRemain);
 

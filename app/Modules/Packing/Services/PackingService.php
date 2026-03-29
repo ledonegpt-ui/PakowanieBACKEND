@@ -116,7 +116,7 @@ final class PackingService
             return [
                 'status' => 'blocked',
                 'order_code' => $orderCode,
-                'next_action' => $this->buildPackingRoleBlockedAction($workMode),
+                'next_action' => $this->buildPackingRoleBlockedAction($workMode, $session),
             ];
         }
 
@@ -435,7 +435,7 @@ final class PackingService
                 'package_mode' => isset($session['package_mode']) ? trim((string)$session['package_mode']) : 'small',
                 'ready' => false,
                 'reason' => 'wrong_work_mode',
-                'next_action' => $this->buildPackingRoleBlockedAction($workMode),
+                'next_action' => $this->buildPackingRoleBlockedAction($workMode, $session),
             ];
         }
 
@@ -486,7 +486,7 @@ final class PackingService
                 'basket_id' => null,
                 'basket_no' => null,
                 'order_code' => null,
-                'next_action' => $this->buildPackingRoleBlockedAction($workMode),
+                'next_action' => $this->buildPackingRoleBlockedAction($workMode, $session),
             ];
         }
 
@@ -570,7 +570,7 @@ final class PackingService
                 'basket_id' => null,
                 'basket_no' => null,
                 'order_code' => null,
-                'next_action' => $this->buildNoReadyBatchAction($reason),
+                'next_action' => $this->buildNoReadyBatchAction($reason, $session),
             ];
         }
 
@@ -585,7 +585,7 @@ final class PackingService
                 'basket_id' => (int)$nextBatch['basket_id'],
                 'basket_no' => (int)$nextBatch['basket_no'],
                 'order_code' => null,
-                'next_action' => $this->buildNoReadyBatchAction('no_orders_in_ready_batch'),
+                'next_action' => $this->buildNoReadyBatchAction('no_orders_in_ready_batch', $session),
             ];
         }
 
@@ -654,58 +654,69 @@ final class PackingService
     {
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
 
+        $resolvedBatchId = $batchId > 0 ? $batchId : 0;
+
         $extra = array_merge(
             array(
-                'batch_id' => $batchId > 0 ? $batchId : null,
+                'batch_id' => $resolvedBatchId > 0 ? $resolvedBatchId : null,
             ),
             $extra
         );
 
-        return NextActionResolver::resumePacking($orderCode, $batchId > 0 ? $batchId : 0, $message, $extra);
+        return NextActionResolver::resumePacking($orderCode, $resolvedBatchId, $message, $extra);
     }
 
     private function buildGoHomeAction(?string $message = null, array $extra = array()): array
     {
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
 
-        return NextActionResolver::build('go_home', $message, $extra);
+        return NextActionResolver::goHome($message, $extra);
     }
 
-    private function buildPackingRoleBlockedAction(string $currentWorkMode): array
+    private function buildPackingRoleBlockedAction(string $currentWorkMode, array $session = array()): array
     {
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
 
-        return NextActionResolver::showModal(
-            'work_mode_conflict',
+        $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : null;
+
+        return NextActionResolver::goHome(
             'Ta akcja jest dostępna tylko w trybie packer. Zmień tryb pracy, aby rozpocząć pakowanie.',
             array(
-                'current_work_mode' => $currentWorkMode,
-                'required_work_mode' => 'packer',
+                'workflow_mode' => $workflowMode,
+                'work_mode' => $currentWorkMode,
             )
         );
     }
 
-    private function buildNoReadyBatchAction(string $reason): array
+    private function buildNoReadyBatchAction(string $reason, array $session = array()): array
     {
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
 
-        $message = 'Brak gotowych koszyków, poczekaj na zbieracza';
-        $modal = 'no_ready_baskets';
+        $message = 'Brak gotowych koszyków do pakowania';
 
         if ($reason === 'no_orders_in_ready_batch') {
             $message = 'Nie znaleziono zamówień do pakowania w gotowym koszyku';
-            $modal = 'no_ready_orders';
+        }
+
+        $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : 'split';
+        if (!in_array($workflowMode, array('integrated', 'split'), true)) {
+            $workflowMode = 'split';
+        }
+
+        $workMode = isset($session['work_mode']) ? trim((string)$session['work_mode']) : 'packer';
+        if (!in_array($workMode, array('picker', 'packer'), true)) {
+            $workMode = 'packer';
         }
 
         return NextActionResolver::showModal(
-            $modal,
+            'no_ready_baskets',
             $message,
             array(
-                'reason' => $reason,
+                'workflow_mode' => $workflowMode,
+                'work_mode' => $workMode,
             )
         );
     }
-
     private function buildSessionDetail(int $sessionId, array $order, array $resolved): array
     {
         $session = $this->repo->findSessionByOrderCode($order['order_code']);
