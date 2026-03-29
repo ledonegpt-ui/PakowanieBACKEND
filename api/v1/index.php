@@ -216,6 +216,10 @@ $routes = [
 
     }],
 
+    ['GET', '/api/v1/packing/current', function (array $params): void {
+        (new PackingController())->current();
+    }],
+
     ['POST', '/api/v1/packing/orders/{orderId}/open', function (array $params): void {
 
         (new PackingController())->open($params);

@@ -20,6 +20,83 @@ final class PackingService
     }
 
     // -------------------------------------------------------------------------
+    // CURRENT SESSION
+    // -------------------------------------------------------------------------
+
+    public function getCurrentSession(array $session): array
+    {
+        $openSession = $this->repo->findOpenSessionWithDetails((int)$session['user_id']);
+
+        if (!$openSession) {
+            return [
+                'has_open_session' => false,
+                'session'          => null,
+                'order'            => null,
+                'items'            => [],
+                'package'          => null,
+                'label'            => null,
+                'basket'           => null,
+                'shipping'         => null,
+            ];
+        }
+
+        $orderCode = (string)$openSession['order_code'];
+        $order = $this->repo->findOrder($orderCode);
+
+        require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
+        $resolver = new ShippingMethodResolver($this->mapCfg);
+        $resolved = $resolver->resolve([
+            'delivery_method' => (string)($order['delivery_method'] ?? ''),
+            'carrier_code'    => (string)($order['carrier_code'] ?? ''),
+            'courier_code'    => (string)($order['courier_code'] ?? ''),
+        ]);
+
+        $sessionId = (int)$openSession['id'];
+        $package = $this->repo->findPackageBySession($sessionId);
+        $label = $package ? $this->repo->findLabelByPackage((int)$package['id']) : null;
+
+        $basket = null;
+        if (!empty($openSession['basket_id'])) {
+            $basket = [
+                'basket_id'     => (int)$openSession['basket_id'],
+                'basket_no'     => !empty($openSession['basket_no']) ? (int)$openSession['basket_no'] : null,
+                'basket_status' => (string)($openSession['basket_status'] ?? ''),
+                'package_mode'  => (string)($openSession['package_mode'] ?? ''),
+            ];
+        }
+
+        return [
+            'has_open_session' => true,
+            'session'          => [
+                'id'               => $sessionId,
+                'session_code'     => (string)$openSession['session_code'],
+                'order_code'       => $orderCode,
+                'picking_batch_id' => (int)($openSession['picking_batch_id'] ?? 0),
+                'user_id'          => (int)$openSession['user_id'],
+                'station_id'       => (int)$openSession['station_id'],
+                'status'           => (string)$openSession['status'],
+                'started_at'       => (string)$openSession['started_at'],
+                'completed_at'     => $openSession['completed_at'],
+                'cancelled_at'     => $openSession['cancelled_at'],
+                'last_seen_at'     => $openSession['last_seen_at'],
+            ],
+            'order'   => $order,
+            'items'   => $this->repo->findOrderItems($orderCode),
+            'package' => $package,
+            'label'   => $label,
+            'basket'  => $basket,
+            'shipping' => [
+                'matched'        => $resolved['matched'] ?? false,
+                'menu_group'     => $resolved['menu_group'] ?? null,
+                'menu_label'     => $resolved['menu_label'] ?? null,
+                'shipment_type'  => $resolved['shipment_type'] ?? null,
+                'label_provider' => $resolved['label_provider'] ?? null,
+                'requires_size'  => $resolved['requires_size'] ?? false,
+            ],
+        ];
+    }
+
+    // -------------------------------------------------------------------------
     // OPEN
     // -------------------------------------------------------------------------
 
@@ -374,48 +451,105 @@ final class PackingService
 
     public function openNextReadyBatch(array $session): array
     {
-        $this->repo->beginTransaction();
-        try {
-            $nextBatch = $this->getNextReadyBatch($session);
-            if (empty($nextBatch['ready']) || empty($nextBatch['batch_id'])) {
-                $this->repo->rollback();
-                return [
-                    'ready' => false,
-                    'reason' => $nextBatch['reason'] ?? 'no_ready_baskets',
-                    'batch_id' => null,
-                    'basket_id' => null,
-                    'basket_no' => null,
-                    'order_code' => null,
+        // Jesli user ma juz otwarta sesje packingu - zwroc ja zamiast szukac nowego koszyka
+        $existingSession = $this->repo->findOpenSessionWithDetails((int)$session['user_id']);
+        if ($existingSession) {
+            $orderCode = (string)$existingSession['order_code'];
+            $order = $this->repo->findOrder($orderCode);
+
+            require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
+            $resolver = new ShippingMethodResolver($this->mapCfg);
+            $resolved = $resolver->resolve([
+                'delivery_method' => (string)($order['delivery_method'] ?? ''),
+                'carrier_code'    => (string)($order['carrier_code'] ?? ''),
+                'courier_code'    => (string)($order['courier_code'] ?? ''),
+            ]);
+
+            $sessionId = (int)$existingSession['id'];
+            $package = $this->repo->findPackageBySession($sessionId);
+            $label = $package ? $this->repo->findLabelByPackage((int)$package['id']) : null;
+            $items = $this->repo->findOrderItems($orderCode);
+
+            $basket = null;
+            if (!empty($existingSession['basket_id'])) {
+                $basket = [
+                    'basket_id'    => (int)$existingSession['basket_id'],
+                    'basket_no'    => !empty($existingSession['basket_no']) ? (int)$existingSession['basket_no'] : null,
+                    'basket_status'=> (string)($existingSession['basket_status'] ?? ''),
+                    'package_mode' => (string)($existingSession['package_mode'] ?? ''),
                 ];
             }
 
-            $batchId = (int)$nextBatch['batch_id'];
-            $orderCode = $this->repo->findNextOrderToPack($batchId);
-
-            if ($orderCode === null || $orderCode === '') {
-                $this->repo->rollback();
-                return [
-                    'ready' => false,
-                    'reason' => 'no_orders_in_ready_batch',
-                    'batch_id' => $batchId,
-                    'basket_id' => (int)$nextBatch['basket_id'],
-                    'basket_no' => (int)$nextBatch['basket_no'],
-                    'order_code' => null,
-                ];
-            }
-
-            $result = $this->openSession($orderCode, $session);
-            $result['auto_loaded_batch'] = true;
-            $result['batch_id'] = $batchId;
-            $result['basket_id'] = (int)$nextBatch['basket_id'];
-            $result['basket_no'] = (int)$nextBatch['basket_no'];
-
-            $this->repo->commit();
-            return $result;
-        } catch (\Throwable $e) {
-            $this->repo->rollback();
-            throw $e;
+            return [
+                'ready'             => true,
+                'resumed'           => true,
+                'auto_loaded_batch' => true,
+                'batch_id'          => (int)($existingSession['picking_batch_id'] ?? 0),
+                'basket_id'         => $basket ? $basket['basket_id'] : null,
+                'basket_no'         => $basket ? $basket['basket_no'] : null,
+                'order_code'        => $orderCode,
+                'session'           => [
+                    'id'               => $sessionId,
+                    'session_code'     => (string)$existingSession['session_code'],
+                    'order_code'       => $orderCode,
+                    'picking_batch_id' => (int)($existingSession['picking_batch_id'] ?? 0),
+                    'user_id'          => (int)$existingSession['user_id'],
+                    'station_id'       => (int)$existingSession['station_id'],
+                    'status'           => 'open',
+                    'started_at'       => (string)$existingSession['started_at'],
+                    'completed_at'     => null,
+                    'cancelled_at'     => null,
+                    'last_seen_at'     => $existingSession['last_seen_at'],
+                ],
+                'order'   => $order,
+                'items'   => $items,
+                'package' => $package,
+                'label'   => $label,
+                'basket'  => $basket,
+                'shipping' => [
+                    'matched'        => $resolved['matched'] ?? false,
+                    'menu_group'     => $resolved['menu_group'] ?? null,
+                    'menu_label'     => $resolved['menu_label'] ?? null,
+                    'shipment_type'  => $resolved['shipment_type'] ?? null,
+                    'label_provider' => $resolved['label_provider'] ?? null,
+                    'requires_size'  => $resolved['requires_size'] ?? false,
+                ],
+            ];
         }
+
+        $nextBatch = $this->getNextReadyBatch($session);
+        if (empty($nextBatch['ready']) || empty($nextBatch['batch_id'])) {
+            return [
+                'ready' => false,
+                'reason' => $nextBatch['reason'] ?? 'no_ready_baskets',
+                'batch_id' => null,
+                'basket_id' => null,
+                'basket_no' => null,
+                'order_code' => null,
+            ];
+        }
+
+        $batchId = (int)$nextBatch['batch_id'];
+        $orderCode = $this->repo->findNextOrderToPack($batchId);
+
+        if ($orderCode === null || $orderCode === '') {
+            return [
+                'ready' => false,
+                'reason' => 'no_orders_in_ready_batch',
+                'batch_id' => $batchId,
+                'basket_id' => (int)$nextBatch['basket_id'],
+                'basket_no' => (int)$nextBatch['basket_no'],
+                'order_code' => null,
+            ];
+        }
+
+        $result = $this->openSession($orderCode, $session);
+        $result['auto_loaded_batch'] = true;
+        $result['batch_id'] = $batchId;
+        $result['basket_id'] = (int)$nextBatch['basket_id'];
+        $result['basket_no'] = (int)$nextBatch['basket_no'];
+
+        return $result;
     }
 
     public function getNextOrder(int $batchId, array $session): array

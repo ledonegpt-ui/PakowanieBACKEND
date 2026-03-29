@@ -56,6 +56,8 @@ final class AuthService
         $pickingBatchSize = (int)($this->cfg['picking_batch_size'] ?? 2);
         if ($pickingBatchSize < 1) { $pickingBatchSize = 2; }
 
+        $this->repo->transferOpenBatchToStation((int)$user['id'], (int)$station['id']);
+        $this->repo->transferOpenPackingSessionToStation((int)$user['id'], (int)$station['id']);
         $this->repo->deactivateActiveSessionsForUser((int)$user['id']);
         $this->repo->createSession( (int)$user['id'], (int)$station['id'], $token, $workflowMode, $workMode, $packageMode, $pickingBatchSize );
 

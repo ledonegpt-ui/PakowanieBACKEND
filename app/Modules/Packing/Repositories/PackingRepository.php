@@ -15,6 +15,27 @@ final class PackingRepository
     // SESSIONS
     // -------------------------------------------------------------------------
 
+    public function findOpenSessionWithDetails(int $userId): ?array
+    {
+        $st = $this->db->prepare("
+            SELECT
+                ps.id, ps.session_code, ps.order_code, ps.picking_batch_id,
+                ps.user_id, ps.station_id, ps.status,
+                ps.started_at, ps.completed_at, ps.cancelled_at, ps.last_seen_at,
+                pb.workflow_mode, pb.package_mode, pb.basket_id,
+                wb.basket_no, wb.status AS basket_status
+            FROM packing_sessions ps
+            LEFT JOIN picking_batches pb ON pb.id = ps.picking_batch_id
+            LEFT JOIN workflow_baskets wb ON wb.id = pb.basket_id
+            WHERE ps.user_id = :user_id
+              AND ps.status = 'open'
+            ORDER BY ps.started_at DESC
+            LIMIT 1
+        ");
+        $st->execute([':user_id' => $userId]);
+        return $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
     public function findOpenSessionForUser(int $userId): ?array
     {
         $st = $this->db->prepare("

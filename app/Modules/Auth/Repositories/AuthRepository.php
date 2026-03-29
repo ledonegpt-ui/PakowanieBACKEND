@@ -128,6 +128,36 @@ final class AuthRepository
         $st->execute([':token' => $token]);
     }
 
+    public function transferOpenBatchToStation(int $userId, int $stationId): void
+    {
+        $st = $this->db->prepare("
+            UPDATE picking_batches
+            SET station_id = :station_id,
+                updated_at = NOW()
+            WHERE user_id = :user_id
+              AND status = 'open'
+        ");
+        $st->execute([
+            ':user_id'    => $userId,
+            ':station_id' => $stationId,
+        ]);
+    }
+
+    public function transferOpenPackingSessionToStation(int $userId, int $stationId): void
+    {
+        $st = $this->db->prepare("
+            UPDATE packing_sessions
+            SET station_id = :station_id,
+                updated_at = NOW()
+            WHERE user_id = :user_id
+              AND status = 'open'
+        ");
+        $st->execute([
+            ':user_id'    => $userId,
+            ':station_id' => $stationId,
+        ]);
+    }
+
     public function deactivateSession(string $token): void
     {
         $sql = "

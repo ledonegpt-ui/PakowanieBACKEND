@@ -54,6 +54,18 @@ final class PackingController
         $this->bootScreenState()->setIdleState($stationId);
     }
 
+    public function current(array $params = []): void
+    {
+        global $currentSession;
+        try {
+            $service = $this->boot();
+            $result  = $service->getCurrentSession($currentSession);
+            ApiResponse::ok(['packing' => $result]);
+        } catch (Throwable $e) {
+            ApiResponse::error($e->getMessage(), 400);
+        }
+    }
+
     public function open(array $params = []): void
     {
         global $currentSession;

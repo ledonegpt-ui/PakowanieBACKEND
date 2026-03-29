@@ -108,6 +108,12 @@ Wartości id zwracają:
 
 ## Packing — nawigacja
 
+- `GET /api/v1/packing/current`
+  - Zwraca aktualnie otwartą sesję packingu dla zalogowanego operatora
+  - Odpowiedź gdy jest otwarta sesja: `{ has_open_session: true, session, order, items, package, label, basket, shipping }`
+  - Odpowiedź gdy brak: `{ has_open_session: false, session: null, ... }`
+  - Używać przy starcie aplikacji do odzyskania stanu po crash/wylogowaniu
+
 - `GET /api/v1/packing/next-ready-batch`
   - Sprawdza czy jest gotowy koszyk dla packera (tryb split).
   - Wymaga: `work_mode = packer` w sesji
