@@ -122,16 +122,111 @@ final class PackingService
 
         $this->repo->beginTransaction();
         try {
-            $existing = $this->repo->findOpenSessionForUserForUpdate((int)$session['user_id']);
+            $userId = (int)$session['user_id'];
+            $stationId = (int)$session['station_id'];
+
+            $existing = $this->repo->findOpenSessionForUserForUpdate($userId);
             if ($existing) {
-                throw new RuntimeException(
-                    'Operator already has an open packing session: ' . $existing['session_code']
-                );
+                $existingOrderCode = (string)$existing['order_code'];
+
+                if ($existingOrderCode === $orderCode) {
+                    $order = $this->repo->findOrder($orderCode);
+                    if (!$order) {
+                        throw new RuntimeException('Order not found: ' . $orderCode);
+                    }
+
+                    require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
+                    $resolver = new ShippingMethodResolver($this->mapCfg);
+                    $resolved = $resolver->resolve([
+                        'delivery_method' => (string)($order['delivery_method'] ?? ''),
+                        'carrier_code'    => (string)($order['carrier_code'] ?? ''),
+                        'courier_code'    => (string)($order['courier_code'] ?? ''),
+                    ]);
+
+                    $this->repo->commit();
+                    $result = $this->buildSessionDetail((int)$existing['id'], $order, $resolved);
+                    $result['status'] = 'resumed';
+                    $result['resumed'] = true;
+                    return $result;
+                }
+
+                $this->repo->rollback();
+                return [
+                    'status' => 'blocked',
+                    'order_code' => $orderCode,
+                    'current_order_code' => $existingOrderCode,
+                    'current_session_code' => (string)$existing['session_code'],
+                    'next_action' => $this->buildResumePackingAction(
+                        $existingOrderCode,
+                        (int)($existing['picking_batch_id'] ?? 0),
+                        'Najpierw zakończ lub wstrzymaj aktualnie otwarte pakowanie'
+                    ),
+                ];
             }
 
             $orderSession = $this->repo->findOpenSessionForOrder($orderCode);
             if ($orderSession) {
                 throw new RuntimeException('Order is already being packed: ' . $orderCode);
+            }
+
+            $latestSession = $this->repo->findSessionByOrderCode($orderCode);
+            if ($latestSession && (string)($latestSession['status'] ?? '') === 'completed') {
+                return [
+                    'status' => 'blocked',
+                    'order_code' => $orderCode,
+                    'completed_session_id' => (int)($latestSession['id'] ?? 0),
+                    'next_action' => $this->buildGoHomeAction('To zamówienie jest już spakowane i nie może zostać ponownie otwarte'),
+                ];
+            }
+
+            $pausedSession = $this->repo->findPausedSessionForOrder($orderCode);
+            if ($pausedSession) {
+                $pausedOwnerUserId = (int)($pausedSession['user_id'] ?? 0);
+
+                if ($pausedOwnerUserId !== $userId) {
+                    $this->repo->rollback();
+                    return [
+                        'status' => 'blocked',
+                        'order_code' => $orderCode,
+                        'blocked_by_user_id' => $pausedOwnerUserId > 0 ? $pausedOwnerUserId : null,
+                        'current_session_code' => (string)($pausedSession['session_code'] ?? ''),
+                        'next_action' => $this->buildGoHomeAction('To zamówienie jest wstrzymane przez innego operatora'),
+                    ];
+                }
+
+                $this->repo->resumePackingSession((int)$pausedSession['id']);
+
+                $order = $this->repo->findOrder($orderCode);
+                if (!$order) {
+                    throw new RuntimeException('Order not found: ' . $orderCode);
+                }
+
+                require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
+                $resolver = new ShippingMethodResolver($this->mapCfg);
+                $resolved = $resolver->resolve([
+                    'delivery_method' => (string)($order['delivery_method'] ?? ''),
+                    'carrier_code'    => (string)($order['carrier_code'] ?? ''),
+                    'courier_code'    => (string)($order['courier_code'] ?? ''),
+                ]);
+
+                $this->repo->logEvent(
+                    (int)$pausedSession['id'],
+                    'session_resumed',
+                    'Packing session resumed for order: ' . $orderCode,
+                    [
+                        'session_id'  => (int)$pausedSession['id'],
+                        'order_code'  => $orderCode,
+                        'user_id'     => $userId,
+                        'station_id'  => $stationId,
+                    ],
+                    $userId
+                );
+
+                $this->repo->commit();
+                $result = $this->buildSessionDetail((int)$pausedSession['id'], $order, $resolved);
+                $result['status'] = 'resumed';
+                $result['resumed'] = true;
+                return $result;
             }
 
             $order = $this->repo->findOrder($orderCode);
@@ -147,6 +242,27 @@ final class PackingService
             $batchBasket = null;
             $batchIdForPacking = (int)($pickingDone['batch_id'] ?? 0);
             if ($batchIdForPacking > 0) {
+                $batchRow = $this->repo->findBatchByIdForUpdate($batchIdForPacking);
+                if (!$batchRow) {
+                    throw new RuntimeException('Batch not found: ' . $batchIdForPacking);
+                }
+
+                $ownerUserId = (int)($batchRow['packing_owner_user_id'] ?? 0);
+                if ($ownerUserId > 0 && $ownerUserId !== $userId) {
+                    $this->repo->rollback();
+                    return [
+                        'status' => 'blocked',
+                        'order_code' => $orderCode,
+                        'batch_id' => $batchIdForPacking,
+                        'blocked_by_user_id' => $ownerUserId,
+                        'next_action' => $this->buildGoHomeAction('Ten koszyk jest już pakowany przez innego operatora'),
+                    ];
+                }
+
+                if ($ownerUserId <= 0) {
+                    $this->repo->assignPackingOwnerIfEmpty($batchIdForPacking, $userId, $stationId);
+                }
+
                 $batchBasket = $this->repo->findBatchBasket($batchIdForPacking);
                 if ($batchBasket && (string)($batchBasket['workflow_mode'] ?? '') === 'split' && !empty($batchBasket['basket_id'])) {
                     $this->repo->markBasketPackingInProgress((int)$batchBasket['basket_id']);
@@ -158,8 +274,8 @@ final class PackingService
                 $sessionCode,
                 $orderCode,
                 (int)$pickingDone['batch_id'],
-                (int)$session['user_id'],
-                (int)$session['station_id']
+                $userId,
+                $stationId
             );
 
             $items = $this->repo->findOrderItems($orderCode);
@@ -214,15 +330,18 @@ final class PackingService
                 [
                     'session_id'  => $sessionId,
                     'order_code'  => $orderCode,
-                    'user_id'     => (int)$session['user_id'],
-                    'station_id'  => (int)$session['station_id'],
+                    'user_id'     => $userId,
+                    'station_id'  => $stationId,
                     'carrier_key' => $resolved['menu_group'] ?? null,
                 ],
-                (int)$session['user_id']
+                $userId
             );
 
             $this->repo->commit();
-            return $this->buildSessionDetail($sessionId, $order, $resolved);
+            $result = $this->buildSessionDetail($sessionId, $order, $resolved);
+            $result['status'] = 'open';
+            $result['resumed'] = false;
+            return $result;
 
         } catch (Throwable $e) {
             $this->repo->rollback();
@@ -254,6 +373,53 @@ final class PackingService
 
         return $this->buildSessionDetail((int)$packingSession['id'], $order, $resolved);
     }
+    // -------------------------------------------------------------------------
+    // PAUSE
+    // -------------------------------------------------------------------------
+
+    public function pauseSession(string $orderCode, array $session): array
+    {
+        $packingSession = $this->repo->findSessionByOrderCode($orderCode);
+        if (!$packingSession) {
+            throw new RuntimeException('No packing session for order: ' . $orderCode);
+        }
+        $this->assertSessionOwner($packingSession, $session);
+
+        if ($packingSession['status'] !== 'open') {
+            throw new RuntimeException('Packing session is not open');
+        }
+
+        $sessionId = (int)$packingSession['id'];
+        $batchId   = (int)($packingSession['picking_batch_id'] ?? 0);
+
+        $this->repo->pauseSession($sessionId);
+
+        $this->repo->logEvent(
+            $sessionId,
+            'session_paused',
+            'Packing paused for order: ' . $orderCode,
+            [
+                'session_id' => $sessionId,
+                'order_code' => $orderCode,
+                'user_id' => (int)$session['user_id'],
+                'station_id' => (int)$session['station_id'],
+                'batch_id' => $batchId > 0 ? $batchId : null,
+            ],
+            (int)$session['user_id']
+        );
+
+        return [
+            'order_code' => $orderCode,
+            'status' => 'paused',
+            'batch_id' => $batchId > 0 ? $batchId : null,
+            'next_action' => $this->buildOpenPackingAction(
+                $batchId > 0 ? $batchId : null,
+                null,
+                'Sesja pakowania wstrzymana'
+            ),
+        ];
+    }
+
 
     // -------------------------------------------------------------------------
     // FINISH
@@ -339,6 +505,10 @@ final class PackingService
 
         $nextOrderCode = $nextOrder ? $nextOrder['order_code'] : null;
         $batchCompleted = $nextOrder === null;
+
+        if ($batchCompleted && $batchId > 0) {
+            $this->repo->releasePackingOwner($batchId);
+        }
 
         return [
             'order_code'      => $orderCode,
@@ -671,6 +841,19 @@ final class PackingService
         require_once BASE_PATH . '/app/Modules/Workflow/Services/NextActionResolver.php';
 
         return NextActionResolver::goHome($message, $extra);
+    }
+
+    private function buildOpenPackingAction(?int $batchId = null, ?string $orderCode = null, ?string $message = null, array $extra = array()): array
+    {
+        return array_merge(
+            array(
+                'type' => 'open_packing',
+                'batch_id' => $batchId,
+                'order_code' => $orderCode,
+                'message' => $message,
+            ),
+            $extra
+        );
     }
 
     private function buildPackingRoleBlockedAction(string $currentWorkMode, array $session = array()): array

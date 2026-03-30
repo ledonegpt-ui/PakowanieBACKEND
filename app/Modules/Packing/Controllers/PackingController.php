@@ -110,6 +110,28 @@ final class PackingController
         }
     }
 
+    public function pause(array $params = []): void
+    {
+        global $currentSession;
+
+        try {
+            $orderCode = (string)($params['orderId'] ?? '');
+            if ($orderCode === '') {
+                ApiResponse::error('Missing orderCode', 400);
+                return;
+            }
+
+            $service = $this->boot();
+            $result  = $service->pauseSession($orderCode, $currentSession);
+
+            $this->syncScreenIdle($currentSession);
+
+            ApiResponse::ok(['packing' => $result]);
+        } catch (Throwable $e) {
+            ApiResponse::error($e->getMessage(), 400);
+        }
+    }
+
     public function finish(array $params = []): void
     {
         global $currentSession;

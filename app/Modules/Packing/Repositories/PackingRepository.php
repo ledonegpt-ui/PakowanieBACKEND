@@ -85,6 +85,46 @@ final class PackingRepository
         return $st->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
+    public function findPausedSessionForUserAndOrder(int $userId, string $orderCode): ?array
+    {
+        $st = $this->db->prepare("
+            SELECT id, session_code, order_code, picking_batch_id,
+                   user_id, station_id, status,
+                   started_at, completed_at, cancelled_at, last_seen_at
+            FROM packing_sessions
+            WHERE user_id = :user_id
+              AND order_code = :order_code
+              AND status = 'paused'
+            ORDER BY started_at DESC
+            LIMIT 1
+            FOR UPDATE
+        ");
+        $st->execute([
+            ':user_id' => $userId,
+            ':order_code' => $orderCode,
+        ]);
+        return $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    public function findPausedSessionForOrder(string $orderCode): ?array
+    {
+        $st = $this->db->prepare("
+            SELECT id, session_code, order_code, picking_batch_id,
+                   user_id, station_id, status,
+                   started_at, completed_at, cancelled_at, last_seen_at
+            FROM packing_sessions
+            WHERE order_code = :order_code
+              AND status = 'paused'
+            ORDER BY started_at DESC
+            LIMIT 1
+            FOR UPDATE
+        ");
+        $st->execute([
+            ':order_code' => $orderCode,
+        ]);
+        return $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
     public function findSessionByOrderCode(string $orderCode): ?array
     {
         $st = $this->db->prepare("
@@ -131,6 +171,28 @@ final class PackingRepository
             UPDATE packing_sessions
             SET status = 'completed', completed_at = NOW(), updated_at = NOW()
             WHERE id = :id
+        ");
+        $st->execute([':id' => $sessionId]);
+    }
+
+    public function pauseSession(int $sessionId): void
+    {
+        $st = $this->db->prepare("
+            UPDATE packing_sessions
+            SET status = 'paused', last_seen_at = NOW(), updated_at = NOW()
+            WHERE id = :id
+              AND status = 'open'
+        ");
+        $st->execute([':id' => $sessionId]);
+    }
+
+    public function resumePackingSession(int $sessionId): void
+    {
+        $st = $this->db->prepare("
+            UPDATE packing_sessions
+            SET status = 'open', last_seen_at = NOW(), updated_at = NOW()
+            WHERE id = :id
+              AND status = 'paused'
         ");
         $st->execute([':id' => $sessionId]);
     }
@@ -645,6 +707,55 @@ final class PackingRepository
         $st->execute([':batch_id' => $batchId]);
         return $st->fetch(PDO::FETCH_ASSOC) ?: null;
     }
+
+    public function findBatchByIdForUpdate(int $batchId): ?array
+    {
+        $st = $this->db->prepare("
+            SELECT
+                id, batch_code, carrier_key, package_mode, user_id, station_id, status,
+                workflow_mode, basket_id, packing_owner_user_id, packing_owner_station_id,
+                packing_locked_at, selection_mode, target_orders_count,
+                started_at, completed_at, abandoned_at, last_seen_at, created_at, updated_at
+            FROM picking_batches
+            WHERE id = :batch_id
+            LIMIT 1
+            FOR UPDATE
+        ");
+        $st->execute([':batch_id' => $batchId]);
+        return $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+
+    public function assignPackingOwnerIfEmpty(int $batchId, int $userId, int $stationId): void
+    {
+        $st = $this->db->prepare("
+            UPDATE picking_batches
+            SET packing_owner_user_id = :user_id,
+                packing_owner_station_id = :station_id,
+                packing_locked_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :batch_id
+              AND packing_owner_user_id IS NULL
+        ");
+        $st->execute([
+            ':batch_id' => $batchId,
+            ':user_id' => $userId,
+            ':station_id' => $stationId,
+        ]);
+    }
+
+    public function releasePackingOwner(int $batchId): void
+    {
+        $st = $this->db->prepare("
+            UPDATE picking_batches
+            SET packing_owner_user_id = NULL,
+                packing_owner_station_id = NULL,
+                packing_locked_at = NULL,
+                updated_at = NOW()
+            WHERE id = :batch_id
+        ");
+        $st->execute([':batch_id' => $batchId]);
+    }
+
 
     public function markBasketPackingInProgress(int $basketId): void
     {

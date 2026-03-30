@@ -111,6 +111,13 @@ final class PickingBatchService
                 $this->repo->attachBasketToBatch($batchId, (int)$basket['id']);
             }
 
+            if ($workflowMode === 'split') {
+                $createdBatch = $this->repo->findBatchByIdForUpdate($batchId);
+                if (!$createdBatch || empty($createdBatch['basket_id'])) {
+                    throw new RuntimeException('Split batch requires basket attachment before commit');
+                }
+            }
+
             foreach ($orders as $order) {
                 $batchOrderId = $this->repo->insertBatchOrder($batchId, $order['order_code']);
                 $this->insertOrderItems($batchOrderId, $order['order_code']);
@@ -594,6 +601,25 @@ final class PickingBatchService
             }
 
             $workflowMode = isset($batch['workflow_mode']) ? trim((string)$batch['workflow_mode']) : 'integrated';
+
+            if ($workflowMode === 'split' && empty($batch['basket_id'])) {
+                $this->repo->rollback();
+
+                return [
+                    'batch_id' => $batchId,
+                    'status' => 'blocked',
+                    'next_action' => $this->buildPickingBlockedModalAction(
+                        'batch_has_unpicked',
+                        'Nie można zamknąć batcha split bez przypiętego koszyka.',
+                        array(
+                            'batch_id' => $batchId,
+                            'workflow_mode' => $workflowMode,
+                            'work_mode' => isset($session['work_mode']) ? trim((string)$session['work_mode']) : null,
+                        )
+                    ),
+                ];
+            }
+
             if ($workflowMode === 'split' && !empty($batch['basket_id'])) {
                 if ((int)$stats['picked_count'] > 0) {
                     $this->repo->markBasketPickedReady((int)$batch['basket_id']);

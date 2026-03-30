@@ -226,6 +226,10 @@ $routes = [
 
     }],
 
+    ['POST', '/api/v1/packing/orders/{orderId}/pause', function (array $params): void {
+        (new PackingController())->pause($params);
+    }],
+
     ['GET', '/api/v1/packing/orders/{orderId}', function (array $params): void {
 
         (new PackingController())->show($params);
