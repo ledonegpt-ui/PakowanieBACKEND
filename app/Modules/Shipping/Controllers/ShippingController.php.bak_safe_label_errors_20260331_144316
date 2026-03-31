@@ -3,37 +3,6 @@ declare(strict_types=1);
 
 final class ShippingController
 {
-
-    private function respondLabelFailure(string $orderCode, string $message, int $sessionId = 0, int $userId = 0, $repo = null): void
-    {
-        if ($sessionId > 0 && $repo !== null) {
-            try {
-                $repo->logEvent(
-                    $sessionId,
-                    'label_generation_failed',
-                    $message,
-                    [
-                        'order_code' => $orderCode,
-                        'retry_allowed' => true,
-                        'user_id' => $userId > 0 ? $userId : null,
-                    ],
-                    $userId > 0 ? $userId : null
-                );
-            } catch (Throwable $logErr) {
-                error_log('label_generation_failed log error: ' . $logErr->getMessage());
-            }
-        }
-
-        ApiResponse::ok([
-            'shipping' => [
-                'order_code' => $orderCode,
-                'status' => 'failed',
-                'retry_allowed' => true,
-                'message' => $message,
-            ]
-        ]);
-    }
-
     private function bootPacking(): PackingRepository
     {
         global $cfg;
@@ -48,7 +17,7 @@ final class ShippingController
         try {
             $orderCode = (string)($params['orderId'] ?? '');
             if ($orderCode === '') {
-                $this->respondLabelFailure('', 'Missing orderCode');
+                ApiResponse::error('Missing orderCode', 400);
                 return;
             }
 
@@ -60,11 +29,11 @@ final class ShippingController
             // znajdź sesję
             $packingSession = $repo->findSessionByOrderCode($orderCode);
             if (!$packingSession || $packingSession['status'] !== 'open') {
-                $this->respondLabelFailure($orderCode, 'No open packing session for order: ' . $orderCode);
+                ApiResponse::error('No open packing session for order: ' . $orderCode, 400);
                 return;
             }
             if ((int)$packingSession['user_id'] !== (int)$currentSession['user_id']) {
-                $this->respondLabelFailure($orderCode, 'Session does not belong to current operator');
+                ApiResponse::error('Session does not belong to current operator', 403);
                 return;
             }
 
@@ -73,7 +42,7 @@ final class ShippingController
             // znajdź zamówienie
             $order = $repo->findOrder($orderCode);
             if (!$order) {
-                $this->respondLabelFailure($orderCode, 'Order not found: ' . $orderCode, $sessionId, (int)$currentSession['user_id'], $repo);
+                ApiResponse::error('Order not found: ' . $orderCode, 400);
                 return;
             }
 
@@ -88,7 +57,7 @@ final class ShippingController
             ]);
 
             if (empty($resolved['label_provider'])) {
-                $this->respondLabelFailure($orderCode, 'Cannot determine label provider for this order', $sessionId, (int)$currentSession['user_id'], $repo);
+                ApiResponse::error('Cannot determine label provider for this order', 400);
                 return;
             }
 
@@ -260,18 +229,7 @@ final class ShippingController
             ]);
 
         } catch (Throwable $e) {
-            $safeOrderCode = isset($orderCode) ? (string)$orderCode : '';
-            $safeSessionId = isset($sessionId) ? (int)$sessionId : 0;
-            $safeUserId = isset($currentSession['user_id']) ? (int)$currentSession['user_id'] : 0;
-            $safeRepo = isset($repo) ? $repo : null;
-
-            $this->respondLabelFailure(
-                $safeOrderCode,
-                $e->getMessage(),
-                $safeSessionId,
-                $safeUserId,
-                $safeRepo
-            );
+            ApiResponse::error($e->getMessage(), 400);
         }
     }
 

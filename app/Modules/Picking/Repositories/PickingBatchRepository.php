@@ -321,82 +321,100 @@ final class PickingBatchRepository
         int $limit,
         array $mapCfg
     ): array {
-        $margin = max($limit * 5, 100);
-
-        $excludeClause = '';
-        $params = [];
-
-        if (!empty($excludeOrderCodes)) {
-            $excPlaceholders = implode(',', array_fill(0, count($excludeOrderCodes), '?'));
-            $excludeClause = "AND order_code NOT IN ($excPlaceholders)";
-            $params = $excludeOrderCodes;
-        }
-
-        $sql = "
-            SELECT order_code, delivery_method, carrier_code, courier_code
-            FROM pak_orders
-            WHERE status = 10
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM order_backlog_holds obh
-                  WHERE obh.order_code = pak_orders.order_code
-                    AND obh.status = 'open'
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM picking_batch_orders pbo_done
-                  JOIN picking_batches pb_done
-                    ON pb_done.id = pbo_done.batch_id
-                  WHERE pbo_done.order_code = pak_orders.order_code
-                    AND pbo_done.status = 'picked'
-                    AND pb_done.status = 'completed'
-              )
-              $excludeClause
-            ORDER BY imported_at ASC, order_code ASC
-            LIMIT " . (int)$margin . "
-        ";
-
-        $st = $this->db->prepare($sql);
-        $st->execute($params);
-        $candidates = $st->fetchAll(PDO::FETCH_ASSOC);
-
-        if (empty($candidates)) {
+        if ($limit <= 0) {
             return array();
         }
 
         require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
         $resolver = new ShippingMethodResolver($mapCfg);
 
-        $candidateOrderCodes = array();
-        foreach ($candidates as $candidate) {
-            $candidateOrderCodes[] = (string)$candidate['order_code'];
+        $pageSize = max($limit * 5, 100);
+        $result = array();
+        $seenOrderCodes = array();
+
+        foreach ($excludeOrderCodes as $excludedOrderCode) {
+            $seenOrderCodes[(string)$excludedOrderCode] = true;
         }
 
-        $orderPackageModes = $this->getOrderPackageModes($candidateOrderCodes);
-        $result = [];
+        while (count($result) < $limit) {
+            $excludeClause = '';
+            $params = array();
 
-        foreach ($candidates as $row) {
-            $resolved = $resolver->resolve([
-                'delivery_method' => (string)($row['delivery_method'] ?? ''),
-                'carrier_code'    => (string)($row['carrier_code'] ?? ''),
-                'courier_code'    => (string)($row['courier_code'] ?? ''),
-            ]);
-
-            $orderCode = (string)$row['order_code'];
-            $orderPackageMode = isset($orderPackageModes[$orderCode])
-                ? (string)$orderPackageModes[$orderCode]
-                : 'unknown';
-
-            if ((string)$resolved['menu_group'] !== $carrierKey) {
-                continue;
+            if (!empty($seenOrderCodes)) {
+                $allExcluded = array_keys($seenOrderCodes);
+                $excPlaceholders = implode(',', array_fill(0, count($allExcluded), '?'));
+                $excludeClause = "AND order_code NOT IN ($excPlaceholders)";
+                $params = $allExcluded;
             }
 
-            if ($orderPackageMode !== $packageMode) {
-                continue;
+            $sql = "
+                SELECT order_code, delivery_method, carrier_code, courier_code
+                FROM pak_orders
+                WHERE status = 10
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM order_backlog_holds obh
+                      WHERE obh.order_code = pak_orders.order_code
+                        AND obh.status = 'open'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM picking_batch_orders pbo_done
+                      JOIN picking_batches pb_done
+                        ON pb_done.id = pbo_done.batch_id
+                      WHERE pbo_done.order_code = pak_orders.order_code
+                        AND pbo_done.status = 'picked'
+                        AND pb_done.status = 'completed'
+                  )
+                  $excludeClause
+                ORDER BY imported_at ASC, order_code ASC
+                LIMIT " . (int)$pageSize . "
+            ";
+
+            $st = $this->db->prepare($sql);
+            $st->execute($params);
+            $candidates = $st->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($candidates)) {
+                break;
             }
 
-            $result[] = $row;
-            if (count($result) >= $limit) {
+            $candidateOrderCodes = array();
+            foreach ($candidates as $candidate) {
+                $candidateOrderCodes[] = (string)$candidate['order_code'];
+            }
+
+            $orderPackageModes = $this->getOrderPackageModes($candidateOrderCodes);
+
+            foreach ($candidates as $row) {
+                $orderCode = (string)$row['order_code'];
+                $seenOrderCodes[$orderCode] = true;
+
+                $resolved = $resolver->resolve([
+                    'delivery_method' => (string)($row['delivery_method'] ?? ''),
+                    'carrier_code'    => (string)($row['carrier_code'] ?? ''),
+                    'courier_code'    => (string)($row['courier_code'] ?? ''),
+                ]);
+
+                $orderPackageMode = isset($orderPackageModes[$orderCode])
+                    ? (string)$orderPackageModes[$orderCode]
+                    : 'unknown';
+
+                if ((string)$resolved['menu_group'] !== $carrierKey) {
+                    continue;
+                }
+
+                if ($orderPackageMode !== $packageMode) {
+                    continue;
+                }
+
+                $result[] = $row;
+                if (count($result) >= $limit) {
+                    break 2;
+                }
+            }
+
+            if (count($candidates) < $pageSize) {
                 break;
             }
         }
@@ -631,6 +649,8 @@ final class PickingBatchRepository
 
     public function getBatchOrders(int $batchId): array
     {
+        $batch = $this->findBatchById($batchId);
+
         $sql = "
         SELECT
             pbo.id,
@@ -723,6 +743,36 @@ final class PickingBatchRepository
             }
         }
 
+        $latestPackingByOrderCode = [];
+        if (!empty($orderCodes)) {
+            $packingPlaceholders = implode(',', array_fill(0, count($orderCodes), '?'));
+            $sqlPacking = "
+            SELECT ps.id, ps.order_code, ps.status, ps.user_id, ps.station_id, ps.started_at, ps.completed_at, ps.cancelled_at
+            FROM packing_sessions ps
+            INNER JOIN (
+                SELECT order_code, MAX(id) AS max_id
+                FROM packing_sessions
+                WHERE order_code IN ($packingPlaceholders)
+                GROUP BY order_code
+            ) last_ps ON last_ps.max_id = ps.id
+        ";
+            $stPacking = $this->db->prepare($sqlPacking);
+            $stPacking->execute($orderCodes);
+            $packingRows = $stPacking->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($packingRows as $packingRow) {
+                $latestPackingByOrderCode[(string)$packingRow['order_code']] = [
+                    'id' => (int)$packingRow['id'],
+                    'status' => (string)$packingRow['status'],
+                    'user_id' => isset($packingRow['user_id']) ? (int)$packingRow['user_id'] : null,
+                    'station_id' => isset($packingRow['station_id']) ? (int)$packingRow['station_id'] : null,
+                    'started_at' => $packingRow['started_at'] ?? null,
+                    'completed_at' => $packingRow['completed_at'] ?? null,
+                    'cancelled_at' => $packingRow['cancelled_at'] ?? null,
+                ];
+            }
+        }
+
         $itemsByBatchOrderId = [];
         foreach ($items as $item) {
             $subiektTowId = isset($item['subiekt_tow_id']) && $item['subiekt_tow_id'] !== null
@@ -755,8 +805,31 @@ final class PickingBatchRepository
             ];
         }
 
+        $basketNo = !empty($batch['basket_no']) ? (int)$batch['basket_no'] : null;
+        $packageMode = isset($batch['package_mode']) ? (string)$batch['package_mode'] : null;
+        $basketLabel = null;
+        if ($basketNo !== null && $basketNo > 0 && in_array($packageMode, ['small', 'large'], true)) {
+            $basketLabel = ($packageMode === 'small' ? 'M' : 'D') . $basketNo;
+        }
+
         foreach ($orders as &$order) {
+            $orderCode = (string)$order['order_code'];
+            $latestPacking = $latestPackingByOrderCode[$orderCode] ?? null;
+            $packingStatus = $latestPacking['status'] ?? null;
+
+            $isPackable = ((string)$order['status'] === 'picked');
+            if (in_array($packingStatus, ['completed', 'cancelled'], true)) {
+                $isPackable = false;
+            }
+
             $order['items'] = $itemsByBatchOrderId[(int)$order['id']] ?? [];
+            $order['packing_status'] = $packingStatus;
+            $order['latest_packing_session'] = $latestPacking;
+            $order['is_packable'] = $isPackable;
+            $order['basket_id'] = !empty($batch['basket_id']) ? (int)$batch['basket_id'] : null;
+            $order['basket_no'] = $basketNo;
+            $order['basket_label'] = $basketLabel;
+            $order['package_mode'] = $packageMode;
         }
         unset($order);
 

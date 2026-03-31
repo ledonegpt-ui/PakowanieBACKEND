@@ -666,6 +666,54 @@ final class PackingRepository
         return $st->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
+    public function getPackableOrderCodesInBatch(int $batchId): array
+    {
+        $sql = "
+            SELECT
+                pbo.order_code,
+                pbo.id AS batch_order_id,
+                last_ps.status AS packing_status
+            FROM picking_batch_orders pbo
+            LEFT JOIN (
+                SELECT ps1.order_code, ps1.status, ps1.id
+                FROM packing_sessions ps1
+                INNER JOIN (
+                    SELECT order_code, MAX(id) AS max_id
+                    FROM packing_sessions
+                    GROUP BY order_code
+                ) ps2 ON ps2.max_id = ps1.id
+            ) last_ps ON last_ps.order_code = pbo.order_code
+            WHERE pbo.batch_id = :batch_id
+              AND pbo.status = 'picked'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM order_backlog_holds obh
+                  WHERE obh.order_code = pbo.order_code
+                    AND obh.status = 'open'
+              )
+              AND (
+                    last_ps.status IS NULL
+                 OR last_ps.status NOT IN ('completed', 'cancelled')
+              )
+            ORDER BY pbo.assigned_at ASC, pbo.id ASC
+        ";
+
+        $st = $this->db->prepare($sql);
+        $st->execute([':batch_id' => $batchId]);
+
+        $result = array();
+        while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
+            $orderCode = isset($row['order_code']) ? (string)$row['order_code'] : '';
+            if ($orderCode === '') {
+                continue;
+            }
+            $result[] = $orderCode;
+        }
+
+        return $result;
+    }
+
+
     public function findNextReadyBatchForPacking(string $packageMode): ?array
     {
         $st = $this->db->prepare("

@@ -265,22 +265,63 @@ final class WorkflowStatusService
             );
         }
 
+        $noOrdersMessage = $this->resolveNoOrdersMessage($db);
+
         $workflow = array(
             'action'        => 'go_home',
             'workflow_mode' => $workflowMode,
             'work_mode'     => $workMode,
-            'message'       => 'Wróć do menu',
+            'message'       => $noOrdersMessage,
         );
 
         return array(
             'workflow' => $workflow,
             'next_action' => NextActionResolver::goHome(
-                'Wróć do menu',
+                $noOrdersMessage,
                 array(
                     'workflow_mode' => $workflowMode,
                     'work_mode'     => $workMode,
                 )
             ),
         );
+    }
+
+    private function resolveNoOrdersMessage(PDO $db): string
+    {
+        $totalOpenOrders = (int)$db->query("
+            SELECT COUNT(*)
+            FROM pak_orders
+            WHERE status = 10
+        ")->fetchColumn();
+
+        if ($totalOpenOrders <= 0) {
+            return 'Brak zamówień do zebrania';
+        }
+
+        $ordersInOpenPicking = (int)$db->query("
+            SELECT COUNT(DISTINCT pbo.order_code)
+            FROM picking_batch_orders pbo
+            INNER JOIN picking_batches pb ON pb.id = pbo.batch_id
+            WHERE pb.status = 'open'
+              AND pbo.status NOT IN ('dropped')
+        ")->fetchColumn();
+
+        if ($ordersInOpenPicking >= $totalOpenOrders) {
+            return 'Wszystkie zamówienia są już w trakcie zbierania';
+        }
+
+        $ordersBlockedByBacklog = (int)$db->query("
+            SELECT COUNT(DISTINCT obh.order_code)
+            FROM order_backlog_holds obh
+            INNER JOIN pak_orders po ON po.order_code = obh.order_code
+            WHERE po.status = 10
+              AND obh.status = 'open'
+        ")->fetchColumn();
+
+        if ($ordersBlockedByBacklog >= $totalOpenOrders) {
+            return 'Zamówienia są zablokowane — sprawdź backlog';
+        }
+
+        return 'Brak zamówień pasujących do bieżącej konfiguracji';
     }
 }

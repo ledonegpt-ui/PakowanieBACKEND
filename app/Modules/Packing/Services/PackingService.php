@@ -775,14 +775,61 @@ final class PackingService
             throw new RuntimeException('Batch not found: ' . $batchId);
         }
 
-        $orderCode = $this->repo->findNextOrderToPack($batchId);
+        $currentOrderCode = trim((string)($_GET['current_order_code'] ?? ''));
+        $direction = trim((string)($_GET['direction'] ?? 'next'));
+        if (!in_array($direction, ['next', 'prev'], true)) {
+            $direction = 'next';
+        }
 
-        if ($orderCode === null) {
+        $packableOrderCodes = $this->repo->getPackableOrderCodesInBatch($batchId);
+
+        if (empty($packableOrderCodes)) {
             return [
                 'order_code' => null,
                 'batch_done' => true,
                 'batch_id'   => $batchId,
+                'direction'  => $direction,
+                'current_order_code' => $currentOrderCode !== '' ? $currentOrderCode : null,
                 'next_action' => $this->buildPostPackingAction(null, true, $session, $batchId),
+            ];
+        }
+
+        $orderCode = null;
+
+        if ($currentOrderCode === '') {
+            $orderCode = $direction === 'prev'
+                ? (string)$packableOrderCodes[count($packableOrderCodes) - 1]
+                : (string)$packableOrderCodes[0];
+        } else {
+            $currentIndex = array_search($currentOrderCode, $packableOrderCodes, true);
+
+            if ($currentIndex === false) {
+                $orderCode = $direction === 'prev'
+                    ? (string)$packableOrderCodes[count($packableOrderCodes) - 1]
+                    : (string)$packableOrderCodes[0];
+            } else {
+                $targetIndex = $direction === 'prev'
+                    ? $currentIndex - 1
+                    : $currentIndex + 1;
+
+                if (isset($packableOrderCodes[$targetIndex])) {
+                    $orderCode = (string)$packableOrderCodes[$targetIndex];
+                }
+            }
+        }
+
+        if ($orderCode === null || $orderCode === '') {
+            return [
+                'order_code' => null,
+                'batch_done' => false,
+                'batch_id'   => $batchId,
+                'direction'  => $direction,
+                'current_order_code' => $currentOrderCode !== '' ? $currentOrderCode : null,
+                'next_action' => $this->buildGoHomeAction('Brak kolejnego dostępnego zamówienia do pakowania', [
+                    'batch_id' => $batchId,
+                    'current_order_code' => $currentOrderCode !== '' ? $currentOrderCode : null,
+                    'direction' => $direction,
+                ]),
             ];
         }
 
@@ -790,6 +837,8 @@ final class PackingService
             'order_code' => $orderCode,
             'batch_done' => false,
             'batch_id'   => $batchId,
+            'direction'  => $direction,
+            'current_order_code' => $currentOrderCode !== '' ? $currentOrderCode : null,
             'next_action' => $this->buildPostPackingAction($orderCode, false, $session, $batchId),
         ];
     }

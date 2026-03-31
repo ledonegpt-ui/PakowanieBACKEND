@@ -173,8 +173,35 @@ final class PickingBatchService
         if (!$batch) {
             throw new RuntimeException('Batch not found: ' . $batchId);
         }
+
         $this->assertBatchOwner($batch, $session);
-        return $this->repo->getBatchOrders($batchId);
+
+        $orders = $this->repo->getBatchOrders($batchId);
+
+        usort($orders, static function (array $a, array $b): int {
+            $aPackable = !empty($a['is_packable']) ? 1 : 0;
+            $bPackable = !empty($b['is_packable']) ? 1 : 0;
+
+            if ($aPackable !== $bPackable) {
+                return $bPackable <=> $aPackable;
+            }
+
+            $aAssignedAt = isset($a['assigned_at']) ? (string)$a['assigned_at'] : '';
+            $bAssignedAt = isset($b['assigned_at']) ? (string)$b['assigned_at'] : '';
+            if ($aAssignedAt !== $bAssignedAt) {
+                return strcmp($aAssignedAt, $bAssignedAt);
+            }
+
+            return ((int)($a['id'] ?? 0)) <=> ((int)($b['id'] ?? 0));
+        });
+
+        $navigationOrder = 1;
+        foreach ($orders as &$order) {
+            $order['navigation_order'] = $navigationOrder++;
+        }
+        unset($order);
+
+        return $orders;
     }
 
     public function getBatchProducts(int $batchId, array $session): array
