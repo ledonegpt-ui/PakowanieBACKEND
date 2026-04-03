@@ -5,8 +5,10 @@
         fallbackPollMs: 8000
     };
 
+    const rememberedStationCode = localStorage.getItem(CONFIG.storageKey) || '';
+
     const state = {
-        stationCode: localStorage.getItem(CONFIG.storageKey) || '',
+        stationCode: '',
         screen: 'station-select',
         connection: 'connecting', // connecting | online | offline
         current: null,
@@ -18,6 +20,13 @@
 
     const el = {
         stationSelectView: document.getElementById('stationSelectView'),
+    if (el.stationInput) {
+        el.stationInput.value = rememberedStationCode;
+    }
+    if (el.adminStationInput) {
+        el.adminStationInput.value = rememberedStationCode;
+    }
+
         idleView: document.getElementById('idleView'),
         packingView: document.getElementById('packingView'),
 

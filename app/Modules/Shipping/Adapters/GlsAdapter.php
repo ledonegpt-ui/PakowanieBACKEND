@@ -10,12 +10,34 @@ class GlsAdapter implements ShippingAdapterInterface
         $this->cfg = $cfg;
     }
 
+    private function shippingDebugEnabled(): bool
+    {
+        $flag = (string)(getenv('CARRIER_DEBUG_VERBOSE') ?: getenv('SHIPPING_DEBUG_VERBOSE') ?: '');
+        $flag = strtolower(trim($flag));
+        return in_array($flag, ['1', 'true', 'yes', 'on', 'debug'], true);
+    }
+
+    private function shippingDebugLog(string $event, array $context = []): void
+    {
+        if (!$this->shippingDebugEnabled()) {
+            return;
+        }
+
+        error_log('[SHIPPING_DEBUG][GLS][' . $event . '] ' . json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
     public function generateLabel(
         array $order,
         array $package,
         array $resolved,
         array $providerCfg
     ): array {
+        $this->shippingDebugLog('generateLabel.start', [
+            'order'       => $order,
+            'package'     => $package,
+            'resolved'    => $resolved,
+            'providerCfg' => $providerCfg,
+        ]);
         $wsdl     = (string)($providerCfg['wsdl']     ?? '');
         $username = (string)($providerCfg['username'] ?? '');
         $password = (string)($providerCfg['password'] ?? '');
@@ -28,12 +50,23 @@ class GlsAdapter implements ShippingAdapterInterface
                 'encoding'   => 'UTF-8',
             ]);
 
+            $this->shippingDebugLog('generateLabel.soapClient', [
+                'wsdl' => $wsdl,
+                'order_code' => $orderCode,
+            ]);
+
             // 1. Login
             $oCredit                = new stdClass();
             $oCredit->user_name     = $username;
             $oCredit->user_password = $password;
             $oLoginResult           = $hClient->adeLogin($oCredit);
             $szSession              = $oLoginResult->return->session;
+
+            $this->shippingDebugLog('generateLabel.login', [
+                'order_code' => $orderCode,
+                'login_result' => $oLoginResult,
+                'session' => $szSession,
+            ]);
 
             $rawResponse    = [];
             $parcelId       = null;
@@ -47,6 +80,10 @@ class GlsAdapter implements ShippingAdapterInterface
                 } else {
                     // Przypadek B — spróbuj znaleźć istniejącą przesyłkę w Firebird po numerze nadania
                     $parcelId = $this->resolveExistingParcelIdFromFirebird($order);
+                    $this->shippingDebugLog('generateLabel.resolveExistingParcel', [
+                        'order_code' => $orderCode,
+                        'resolved_parcel_id' => $parcelId,
+                    ]);
 
                     if ($parcelId !== '') {
                         $trackingNumber = (string)($order['tracking_number'] ?? $order['nr_nadania'] ?? $parcelId);
@@ -54,6 +91,11 @@ class GlsAdapter implements ShippingAdapterInterface
                         // Przypadek C — nowa przesyłka
                         $insertResult   = $this->createParcel($hClient, $szSession, $order);
                         $rawResponse    = (array)$insertResult;
+                        $this->shippingDebugLog('generateLabel.createParcelResult', [
+                            'order_code' => $orderCode,
+                            'insert_result' => $insertResult,
+                            'raw_response' => $rawResponse,
+                        ]);
                         // API zwraca cID { int id }
                         $parcelId       = (string)($insertResult->return->id ?? '');
                         $trackingNumber = $parcelId;
@@ -69,8 +111,21 @@ class GlsAdapter implements ShippingAdapterInterface
                 $oLabelResult = $hClient->adePreparingBox_GetConsignLabels($oInput);
                 $zplData      = base64_decode($oLabelResult->return->labels);
 
+                $this->shippingDebugLog('generateLabel.labelResponse', [
+                    'order_code' => $orderCode,
+                    'parcel_id' => $parcelId,
+                    'label_result' => $oLabelResult,
+                    'zpl_length' => strlen((string)$zplData),
+                ]);
+
                 // 3. Zapisz na dysk
                 $filename = $this->saveLabel($zplData, $orderCode);
+                $this->shippingDebugLog('generateLabel.labelSaved', [
+                    'order_code' => $orderCode,
+                    'filename' => $filename,
+                    'parcel_id' => $parcelId,
+                    'tracking_number' => $trackingNumber,
+                ]);
 
             } finally {
                 // Logout — zawsze
@@ -90,6 +145,11 @@ class GlsAdapter implements ShippingAdapterInterface
             ];
 
         } catch (\SoapFault $e) {
+            $this->shippingDebugLog('generateLabel.soapFault', [
+                'order_code' => $orderCode,
+                'message' => $e->getMessage(),
+                'faultcode' => $e->faultcode ?? '',
+            ]);
             return [
                 'tracking_number'      => '',
                 'external_shipment_id' => '',
@@ -124,6 +184,11 @@ class GlsAdapter implements ShippingAdapterInterface
 
     private function createParcel(SoapClient $hClient, string $session, array $order): object
     {
+        $this->shippingDebugLog('createParcel.start', [
+            'session' => $session,
+            'order' => $order,
+        ]);
+
         $isCod = stripos($order['delivery_method'] ?? '', 'pobranie') !== false;
         $codAmount = 0.0;
         if ($isCod) {
@@ -175,6 +240,10 @@ class GlsAdapter implements ShippingAdapterInterface
         $params                    = new stdClass();
         $params->session           = $session;
         $params->consign_prep_data = $consign;
+
+        $this->shippingDebugLog('createParcel.params', [
+            'params' => $params,
+        ]);
 
         return $hClient->adePreparingBox_Insert($params);
     }

@@ -9,7 +9,7 @@ final class ZebraPrinter
      */
     public static function print(string $stationCode, string $filePath): void
     {
-        $printerName = 'zebra_st' . $stationCode . '_raw';
+        $printerName = 'zebra_st' . $stationCode . '_' . (strtolower((string)pathinfo($filePath, PATHINFO_EXTENSION)) === 'pdf' ? 'pdf' : 'raw');
         $safeFile    = escapeshellarg($filePath);
         $safePrinter = escapeshellarg($printerName);
 

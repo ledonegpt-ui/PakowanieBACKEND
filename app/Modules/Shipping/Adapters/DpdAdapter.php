@@ -150,7 +150,7 @@ final class DpdAdapter implements ShippingAdapterInterface
         $docData  = $labelResult->return->documentData ?? null;
 
         if ($docData) {
-            $pdfBytes = base64_decode((string)$docData);
+            $pdfBytes = (string)$docData;
             if ($pdfBytes && strlen($pdfBytes) > 100) {
                 $dir = BASE_PATH . '/storage/labels/dpd';
                 if (!is_dir($dir)) {
@@ -166,7 +166,7 @@ final class DpdAdapter implements ShippingAdapterInterface
             'external_shipment_id' => null,
             'label_format'         => 'pdf',
             'label_status'         => $fileName ? 'ok' : 'pending',
-            'file_path'            => $fileName,
+            'file_path'            => $fileName ? 'dpd/' . $fileName : null,
             'file_token'           => $fileName,
             'raw_response'         => ['waybill' => $waybill, 'status' => 'OK'],
         ];

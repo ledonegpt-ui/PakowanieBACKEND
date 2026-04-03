@@ -351,6 +351,7 @@ final class PickingBatchRepository
                 SELECT order_code, delivery_method, carrier_code, courier_code
                 FROM pak_orders
                 WHERE status = 10
+                  AND picking_reserved_batch_id IS NULL
                   AND NOT EXISTS (
                       SELECT 1
                       FROM order_backlog_holds obh
@@ -443,6 +444,7 @@ final class PickingBatchRepository
             SELECT order_code, delivery_method, carrier_code, courier_code, courier_priority, imported_at
             FROM pak_orders
             WHERE status = 10
+              AND picking_reserved_batch_id IS NULL
               AND NOT EXISTS (
                   SELECT 1
                   FROM order_backlog_holds obh
@@ -1708,6 +1710,62 @@ final class PickingBatchRepository
 
         $formatted = number_format((float)$qty, 3, '.', '');
         return rtrim(rtrim($formatted, '0'), '.');
+    }
+
+    public function tryReserveOrderForBatch(string $orderCode, int $batchId, int $userId): bool
+    {
+        $sql = "
+            UPDATE pak_orders
+            SET picking_reserved_batch_id = :batch_id,
+                picking_reserved_by_user_id = :user_id,
+                picking_reserved_at = NOW()
+            WHERE order_code = :order_code
+              AND status = 10
+              AND picking_reserved_batch_id IS NULL
+            LIMIT 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([
+            ":batch_id"   => $batchId,
+            ":user_id"    => $userId,
+            ":order_code" => $orderCode,
+        ]);
+        return $st->rowCount() === 1;
+    }
+
+    public function releaseOrderReservation(string $orderCode, ?int $batchId = null): void
+    {
+        $sql = "
+            UPDATE pak_orders
+            SET picking_reserved_batch_id = NULL,
+                picking_reserved_by_user_id = NULL,
+                picking_reserved_at = NULL
+            WHERE order_code = :order_code
+        ";
+        $params = [":order_code" => $orderCode];
+
+        if ($batchId !== null) {
+            $sql .= " AND picking_reserved_batch_id = :batch_id";
+            $params[":batch_id"] = $batchId;
+        }
+
+        $sql .= " LIMIT 1";
+
+        $st = $this->db->prepare($sql);
+        $st->execute($params);
+    }
+
+    public function releaseOrderReservationsForBatch(int $batchId): void
+    {
+        $sql = "
+            UPDATE pak_orders
+            SET picking_reserved_batch_id = NULL,
+                picking_reserved_by_user_id = NULL,
+                picking_reserved_at = NULL
+            WHERE picking_reserved_batch_id = :batch_id
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute([":batch_id" => $batchId]);
     }
 
     private function decodeJsonArray($json): array

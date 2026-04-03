@@ -25,10 +25,33 @@ final class AllegroAdapter implements ShippingAdapterInterface
         $this->db  = \Db::mysql($cfg);
     }
 
+    private function shippingDebugEnabled(): bool
+    {
+        $flag = (string)(getenv('CARRIER_DEBUG_VERBOSE') ?: getenv('SHIPPING_DEBUG_VERBOSE') ?: '');
+        $flag = strtolower(trim($flag));
+        return in_array($flag, ['1', 'true', 'yes', 'on', 'debug'], true);
+    }
+
+    private function shippingDebugLog(string $event, array $context = []): void
+    {
+        if (!$this->shippingDebugEnabled()) {
+            return;
+        }
+
+        error_log('[SHIPPING_DEBUG][ALLEGRO][' . $event . '] ' . json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
     public function generateLabel(array $order, array $package, array $resolved, array $providerCfg): array
     {
         $token   = \AllegroTokenProvider::getToken($this->cfg);
         $orderId = (string)($order['order_code'] ?? '');
+
+        $this->shippingDebugLog('generateLabel.start', [
+            'order'       => $order,
+            'package'     => $package,
+            'resolved'    => $resolved,
+            'providerCfg' => $providerCfg,
+        ]);
 
         if (empty($orderId)) {
             throw new \RuntimeException('AllegroAdapter: brak order_code');
@@ -41,6 +64,11 @@ final class AllegroAdapter implements ShippingAdapterInterface
 
         // Pobierz pełne dane zamówienia z Allegro
         $form = $this->apiGet('/order/checkout-forms/' . $shopOrderId, $token);
+        $this->shippingDebugLog('generateLabel.checkoutForm', [
+            'order_code'    => $orderId,
+            'shop_order_id' => $shopOrderId,
+            'form'          => $form,
+        ]);
 
         // Sprawdź czy przesyłka już istnieje
         $parcelId = (string)($order['allegro_parcel_id'] ?? '');
@@ -52,11 +80,22 @@ final class AllegroAdapter implements ShippingAdapterInterface
         if (empty($parcelId)) {
             $parcelId = $this->createShipment($orderId, $form, $token);
         }
+        $this->shippingDebugLog('generateLabel.parcelId', [
+            'order_code' => $orderId,
+            'parcel_id'  => $parcelId,
+        ]);
 
         // Pobierz szczegóły przesyłki
         $shipment       = $this->apiGet('/shipment-management/shipments/' . $parcelId, $token);
         $waybill        = (string)($shipment['packages'][0]['waybill'] ?? '');
         $trackingNumber = (string)($shipment['additionalProperties']['EXTERNAL_CARRIER_WAYBILL'] ?? $waybill);
+        $this->shippingDebugLog('generateLabel.shipment', [
+            'order_code'       => $orderId,
+            'parcel_id'        => $parcelId,
+            'shipment'         => $shipment,
+            'waybill'          => $waybill,
+            'tracking_number'  => $trackingNumber,
+        ]);
 
         // Zapisz do bazy
         $this->saveParcelToDb($orderId, $parcelId, $waybill);
@@ -64,6 +103,12 @@ final class AllegroAdapter implements ShippingAdapterInterface
         // Pobierz etykietę
         $labelContent = $this->fetchLabel($parcelId, $token);
         $fileToken    = $this->saveLabel($labelContent, $orderId);
+        $this->shippingDebugLog('generateLabel.labelSaved', [
+            'order_code'          => $orderId,
+            'parcel_id'           => $parcelId,
+            'label_length'        => strlen($labelContent),
+            'file_token'          => $fileToken,
+        ]);
 
         return [
             'tracking_number'      => $trackingNumber,
@@ -92,6 +137,11 @@ final class AllegroAdapter implements ShippingAdapterInterface
 
     private function createShipment(string $orderId, array $form, string $token): string
     {
+        $this->shippingDebugLog('createShipment.start', [
+            'order_code' => $orderId,
+            'form'       => $form,
+        ]);
+
         $addr     = $form['delivery']['address'] ?? [];
         $buyer    = $form['buyer'] ?? [];
         $pickup   = $form['delivery']['pickupPoint'] ?? null;
@@ -123,6 +173,13 @@ final class AllegroAdapter implements ShippingAdapterInterface
 
         // Pobierz waluty COD i insurance z delivery-services dla tej konkretnej metody
         $deliveryService = $this->fetchDeliveryService($methodId, $token);
+        $this->shippingDebugLog('createShipment.deliveryService', [
+            'order_code'       => $orderId,
+            'method_id'        => $methodId,
+            'delivery_service' => $deliveryService,
+            'pickup'           => $pickup,
+            'receiver'         => $receiver,
+        ]);
         $codCurrency     = (string)($deliveryService['cashOnDelivery']['currency'] ?? 'PLN');
         $insCurrency     = (string)($deliveryService['insurance']['currency'] ?? 'PLN');
         $insLimit        = (float)($deliveryService['insurance']['limit'] ?? 0);
@@ -159,6 +216,12 @@ final class AllegroAdapter implements ShippingAdapterInterface
             $input['insurance'] = ['amount' => min(100.00, $insLimit), 'currency' => $insCurrency];
         }
 
+        $this->shippingDebugLog('createShipment.command', [
+            'order_code' => $orderId,
+            'command_id' => $commandId,
+            'input'      => $input,
+        ]);
+
         $this->apiPost('/shipment-management/shipments/create-commands', [
             'commandId' => $commandId,
             'input'     => $input,
@@ -170,6 +233,13 @@ final class AllegroAdapter implements ShippingAdapterInterface
             $result = $this->apiGet('/shipment-management/shipments/create-commands/' . $commandId, $token);
             $status = $result['status'] ?? '';
 
+            $this->shippingDebugLog('createShipment.poll', [
+                'order_code' => $orderId,
+                'command_id' => $commandId,
+                'attempt'    => $i + 1,
+                'result'     => $result,
+            ]);
+
             if ($status === 'SUCCESS') {
                 $shipmentId = (string)($result['shipmentId'] ?? '');
                 if (empty($shipmentId)) {
@@ -180,6 +250,12 @@ final class AllegroAdapter implements ShippingAdapterInterface
 
             if ($status === 'ERROR') {
                 $errors = json_encode($result['errors'] ?? $result, JSON_UNESCAPED_UNICODE);
+                $this->shippingDebugLog('createShipment.error', [
+                    'order_code' => $orderId,
+                    'command_id' => $commandId,
+                    'errors'     => $result['errors'] ?? $result,
+                    'errors_json'=> $errors,
+                ]);
                 throw new \RuntimeException($this->translateAllegroError($result['errors'] ?? []));
             }
         }
@@ -301,6 +377,10 @@ final class AllegroAdapter implements ShippingAdapterInterface
 
     private function apiGet(string $path, string $token): array
     {
+        $this->shippingDebugLog('apiGet.request', [
+            'path' => $path,
+        ]);
+
         $ch = curl_init(self::BASE_URL . $path);
         curl_setopt_array($ch, [
             CURLOPT_HTTPHEADER     => [
@@ -313,6 +393,12 @@ final class AllegroAdapter implements ShippingAdapterInterface
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         if (curl_errno($ch)) throw new \RuntimeException('AllegroAdapter GET cURL: ' . curl_error($ch));
         curl_close($ch);
+        $this->shippingDebugLog('apiGet.response', [
+            'path' => $path,
+            'http_code' => $code,
+            'raw' => $raw,
+        ]);
+
         if ($code >= 400) {
             throw new \RuntimeException('AllegroAdapter GET HTTP ' . $code . ' ' . $path . ': ' . substr($raw, 0, 500));
         }
@@ -321,6 +407,11 @@ final class AllegroAdapter implements ShippingAdapterInterface
 
     private function apiPost(string $path, array $payload, string $token): array
     {
+        $this->shippingDebugLog('apiPost.request', [
+            'path'    => $path,
+            'payload' => $payload,
+        ]);
+
         $ch = curl_init(self::BASE_URL . $path);
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
@@ -336,6 +427,12 @@ final class AllegroAdapter implements ShippingAdapterInterface
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         if (curl_errno($ch)) throw new \RuntimeException('AllegroAdapter POST cURL: ' . curl_error($ch));
         curl_close($ch);
+        $this->shippingDebugLog('apiPost.response', [
+            'path'      => $path,
+            'http_code' => $code,
+            'raw'       => $raw,
+        ]);
+
         if ($code >= 400) {
             throw new \RuntimeException('AllegroAdapter POST HTTP ' . $code . ' ' . $path . ': ' . substr($raw, 0, 500));
         }

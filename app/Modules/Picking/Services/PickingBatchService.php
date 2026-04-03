@@ -519,6 +519,7 @@ final class PickingBatchService
                 $this->repo->clearBatchBasket($batchId);
             }
 
+            $this->repo->releaseOrderReservationsForBatch($batchId);
             $this->repo->abandonBatch($batchId);
 
             $this->repo->logEvent(
@@ -657,6 +658,7 @@ final class PickingBatchService
             }
 
             $this->repo->closeBatch($batchId);
+            $this->repo->releaseOrderReservationsForBatch($batchId);
 
             $this->repo->logEvent(
                 $batchId, 'batch_closed', null, null,
@@ -763,22 +765,31 @@ final class PickingBatchService
 
             $newOrders = $this->selectOrdersForBatch((string)$batch['carrier_key'], $packageMode, $excludedCodes, $needed, $selectionMode);
 
+            $addedOrders = array();
+
             foreach ($newOrders as $order) {
-                $batchOrderId = $this->repo->insertBatchOrder($batchId, $order['order_code']);
-                $this->insertOrderItems($batchOrderId, $order['order_code']);
+                $orderCode = (string)$order['order_code'];
+
+                if (!$this->repo->tryReserveOrderForBatch($orderCode, $batchId, (int)$session['user_id'])) {
+                    continue;
+                }
+
+                $batchOrderId = $this->repo->insertBatchOrder($batchId, $orderCode);
+                $this->insertOrderItems($batchOrderId, $orderCode);
+                $addedOrders[] = $order;
             }
 
             $this->repo->rebuildBatchItems($batchId);
 
-            if (!empty($newOrders)) {
+            if (!empty($addedOrders)) {
                 $this->repo->logEvent(
                     $batchId, 'batch_refilled', null, null,
-                    'Refilled with ' . count($newOrders) . ' orders',
+                    'Refilled with ' . count($addedOrders) . ' orders',
                     [
                         'batch_id'            => $batchId,
                         'selection_mode'      => $selectionMode,
                         'package_mode'        => $packageMode,
-                        'added_orders_count'  => count($newOrders),
+                        'added_orders_count'  => count($addedOrders),
                         'target_orders_count' => $target,
                         'user_id'             => (int)$session['user_id'],
                     ],
@@ -790,7 +801,7 @@ final class PickingBatchService
                 $this->repo->commit();
             }
 
-            return ['refilled' => count($newOrders), 'active_orders' => $activeCount + count($newOrders)];
+            return ['refilled' => count($addedOrders), 'active_orders' => $activeCount + count($addedOrders)];
 
         } catch (Throwable $e) {
             if ($manageTransaction) {
@@ -808,6 +819,7 @@ final class PickingBatchService
         }
 
         $this->repo->dropBatchOrder((int)$batchOrder['id'], $reason);
+        $this->repo->releaseOrderReservation($orderCode, (int)$batch['id']);
         $this->repo->rebuildBatchItems((int)$batch['id']);
 
         $this->repo->logEvent(
@@ -1252,6 +1264,14 @@ final class PickingBatchService
         if ((int)$batch['user_id'] !== (int)$session['user_id']) {
             throw new RuntimeException('Batch does not belong to current operator');
         }
+
+        $workflowMode = isset($session['workflow_mode']) ? trim((string)$session['workflow_mode']) : 'integrated';
+        $workMode     = isset($session['work_mode']) ? trim((string)$session['work_mode']) : 'picker';
+
+        if ($workflowMode === 'split' && $workMode === 'picker' && (string)($batch['status'] ?? '') === 'open') {
+            return;
+        }
+
         if ((int)$batch['station_id'] !== (int)$session['station_id']) {
             throw new RuntimeException('Batch does not belong to current station');
         }

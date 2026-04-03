@@ -413,10 +413,33 @@ final class ShippingController
                 return;
             }
 
+            $stationCode = (string)($currentSession['station_code'] ?? '');
+            if ($stationCode === '') {
+                throw new RuntimeException('No station_code in session');
+            }
+
+            $filePath = (string)($label['file_path'] ?? '');
+            if ($filePath === '') {
+                throw new RuntimeException('No label file path for order: ' . $orderCode);
+            }
+
+            $fullPath = BASE_PATH . '/storage/labels/' . ltrim($filePath, '/');
+            if (!file_exists($fullPath)) {
+                throw new RuntimeException('Label file not found for reprint: ' . $filePath);
+            }
+
+            require_once BASE_PATH . '/app/Support/ZebraPrinter.php';
+            ZebraPrinter::print($stationCode, $fullPath);
+
             $repo->logEvent(
                 (int)$packingSession['id'], 'label_reprinted',
                 'Label reprint requested for order: ' . $orderCode,
-                ['order_code' => $orderCode, 'user_id' => (int)$currentSession['user_id']],
+                [
+                    'order_code'   => $orderCode,
+                    'user_id'      => (int)$currentSession['user_id'],
+                    'station_code' => $stationCode,
+                    'file_path'    => $filePath,
+                ],
                 (int)$currentSession['user_id']
             );
 
@@ -429,6 +452,8 @@ final class ShippingController
                     'file_token'      => $label['file_token'],
                     'file_path'       => $label['file_path'],
                     'source'          => 'reprint',
+                    'reprint_sent'    => true,
+                    'station_code'    => $stationCode,
                 ]
             ]);
 

@@ -151,7 +151,20 @@
                 <h1>Monitor pakowania</h1>
                 <p class="muted">Podaj numer stanowiska aby rozpocząć.</p>
                 <form id="stationForm" class="station-form">
-                    <input id="stationInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Nr stanowiska, np. 11" aria-label="Numer stanowiska" />
+                    <select id="stationInput" aria-label="Numer stanowiska">
+                        <option value="">Wybierz stanowisko</option>
+                        <option value="1">Stanowisko 1</option>
+                        <option value="2">Stanowisko 2</option>
+                        <option value="3">Stanowisko 3</option>
+                        <option value="4">Stanowisko 4</option>
+                        <option value="5">Stanowisko 5</option>
+                        <option value="6">Stanowisko 6</option>
+                        <option value="7">Stanowisko 7</option>
+                        <option value="8">Stanowisko 8</option>
+                        <option value="9">Stanowisko 9</option>
+                        <option value="10">Stanowisko 10</option>
+                        <option value="11">Stanowisko 11</option>
+                    </select>
                     <button type="submit">START</button>
                 </form>
             </div>
@@ -202,7 +215,20 @@
     <div class="admin-panel">
         <h2>Zmiana stanowiska</h2>
         <p class="muted">Ctrl + Alt + S</p>
-        <input id="adminStationInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Numer stanowiska" aria-label="Nowy numer stanowiska" style="margin-top:16px;width:100%;" />
+        <select id="adminStationInput" aria-label="Nowy numer stanowiska" style="margin-top:16px;width:100%;">
+            <option value="">Wybierz stanowisko</option>
+            <option value="1">Stanowisko 1</option>
+            <option value="2">Stanowisko 2</option>
+            <option value="3">Stanowisko 3</option>
+            <option value="4">Stanowisko 4</option>
+            <option value="5">Stanowisko 5</option>
+            <option value="6">Stanowisko 6</option>
+            <option value="7">Stanowisko 7</option>
+            <option value="8">Stanowisko 8</option>
+            <option value="9">Stanowisko 9</option>
+            <option value="10">Stanowisko 10</option>
+            <option value="11">Stanowisko 11</option>
+        </select>
         <div class="admin-actions">
             <button type="button" id="adminSaveBtn">Zapisz</button>
             <button type="button" id="adminClearBtn">Wyczyść</button>
