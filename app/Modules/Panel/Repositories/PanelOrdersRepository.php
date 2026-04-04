@@ -189,6 +189,7 @@ final class PanelOrdersRepository
             'batch' => $batchInfo[$orderCode] ?? null,
             'picking_events' => $pickingEvents,
             'admin_changes' => $adminChanges,
+            'shipping' => $this->getShippingDebugForOrder($orderCode, $resolved),
         );
     }
 
@@ -472,4 +473,620 @@ final class PanelOrdersRepository
 
         return $result;
     }
+
+    private function getShippingDebugForOrder(string $orderCode, array $resolved): array
+    {
+        $packingSession = $this->getLatestPackingSessionForOrder($orderCode);
+        $package = null;
+        $label = null;
+        $events = array();
+
+        if ($packingSession) {
+            $package = $this->getPackageForSession((int)$packingSession['id']);
+            if ($package) {
+                $label = $this->getLatestLabelForPackage((int)$package['id']);
+            }
+            $events = $this->getShippingEventsForSession((int)$packingSession['id']);
+        }
+
+        return array(
+            'resolved' => $resolved,
+            'packing_session' => $packingSession,
+            'package' => $package,
+            'label' => $label,
+            'latest_error' => $this->getLatestLabelFailureForOrder($orderCode),
+            'events' => $events,
+        );
+    }
+
+    private function getLatestPackingSessionForOrder(string $orderCode): ?array
+    {
+        $sql = "
+            SELECT
+                id,
+                session_code,
+                order_code,
+                picking_batch_id,
+                user_id,
+                station_id,
+                status,
+                started_at,
+                completed_at,
+                cancelled_at,
+                last_seen_at
+            FROM packing_sessions
+            WHERE order_code = :order_code
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute(array(':order_code' => $orderCode));
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    }
+
+    private function getPackageForSession(int $sessionId): ?array
+    {
+        $sql = "
+            SELECT
+                id,
+                packing_session_id,
+                package_no,
+                provider_id,
+                service_code,
+                package_size_code,
+                tracking_number,
+                external_shipment_id,
+                status,
+                created_at,
+                updated_at
+            FROM packages
+            WHERE packing_session_id = :session_id
+            ORDER BY package_no ASC, id ASC
+            LIMIT 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute(array(':session_id' => $sessionId));
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    }
+
+    private function getLatestLabelForPackage(int $packageId): ?array
+    {
+        $sql = "
+            SELECT
+                id,
+                package_id,
+                label_format,
+                label_status,
+                file_path,
+                file_token,
+                raw_response_json,
+                created_at
+            FROM package_labels
+            WHERE package_id = :package_id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute(array(':package_id' => $packageId));
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    }
+
+    private function getLatestLabelFailureForOrder(string $orderCode): ?array
+    {
+        $sql = "
+            SELECT
+                pe.id,
+                pe.event_type,
+                pe.event_message,
+                pe.payload_json,
+                pe.created_at,
+                pe.created_by_user_id
+            FROM packing_events pe
+            INNER JOIN packing_sessions ps ON ps.id = pe.packing_session_id
+            WHERE ps.order_code = :order_code
+              AND pe.event_type = 'label_generation_failed'
+            ORDER BY pe.created_at DESC, pe.id DESC
+            LIMIT 1
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute(array(':order_code' => $orderCode));
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    }
+
+    private function getShippingEventsForSession(int $sessionId): array
+    {
+        $sql = "
+            SELECT
+                id,
+                event_type,
+                event_message,
+                payload_json,
+                created_at,
+                created_by_user_id
+            FROM packing_events
+            WHERE packing_session_id = :session_id
+              AND event_type IN ('label_generated', 'label_generation_failed', 'label_reprinted')
+            ORDER BY created_at DESC, id DESC
+            LIMIT 30
+        ";
+        $st = $this->db->prepare($sql);
+        $st->execute(array(':session_id' => $sessionId));
+
+        return $st->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+
+    public function forceDeleteOrder(string $orderCode, int $changedByUserId, string $reason = ''): array
+    {
+        $orderCode = trim($orderCode);
+        if ($orderCode === '') {
+            throw new RuntimeException('Missing orderCode');
+        }
+
+        $this->db->beginTransaction();
+
+        try {
+            $st = $this->db->prepare("
+                SELECT order_code
+                FROM pak_orders
+                WHERE order_code = :order_code
+                LIMIT 1
+                FOR UPDATE
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $order = $st->fetch(PDO::FETCH_ASSOC);
+
+            if (!$order) {
+                throw new RuntimeException('Order not found');
+            }
+
+            $st = $this->db->prepare("
+                SELECT id, batch_id, status
+                FROM picking_batch_orders
+                WHERE order_code = :order_code
+                FOR UPDATE
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $batchOrderRows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+            $batchOrderIds = array();
+            $affectedBatchIds = array();
+
+            foreach ($batchOrderRows as $row) {
+                $batchOrderIds[] = (int)$row['id'];
+                if (!empty($row['batch_id'])) {
+                    $affectedBatchIds[(int)$row['batch_id']] = (int)$row['batch_id'];
+                }
+            }
+
+            $st = $this->db->prepare("
+                SELECT id, picking_batch_id, status
+                FROM packing_sessions
+                WHERE order_code = :order_code
+                FOR UPDATE
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $packingSessions = $st->fetchAll(PDO::FETCH_ASSOC);
+
+            $sessionIds = array();
+            foreach ($packingSessions as $row) {
+                $sessionIds[] = (int)$row['id'];
+                if (!empty($row['picking_batch_id'])) {
+                    $affectedBatchIds[(int)$row['picking_batch_id']] = (int)$row['picking_batch_id'];
+                }
+            }
+
+            $st = $this->db->prepare("
+                SELECT item_id
+                FROM pak_order_items
+                WHERE order_code = :order_code
+                FOR UPDATE
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $itemIds = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'item_id'));
+
+            $packageIds = array();
+            if (!empty($sessionIds)) {
+                $in = $this->buildInClause($sessionIds, 'sid');
+                $st = $this->db->prepare("
+                    SELECT id
+                    FROM packages
+                    WHERE packing_session_id IN (" . $in['clause'] . ")
+                    FOR UPDATE
+                ");
+                $st->execute($in['params']);
+                $packageIds = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'id'));
+            }
+
+            $pickingOrderItemIds = array();
+            if (!empty($batchOrderIds)) {
+                $in = $this->buildInClause($batchOrderIds, 'boid');
+                $st = $this->db->prepare("
+                    SELECT id
+                    FROM picking_order_items
+                    WHERE batch_order_id IN (" . $in['clause'] . ")
+                    FOR UPDATE
+                ");
+                $st->execute($in['params']);
+                $pickingOrderItemIds = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'id'));
+            }
+
+            $deleted = array(
+                'package_labels' => 0,
+                'packing_events' => 0,
+                'packing_session_items' => 0,
+                'packages' => 0,
+                'packing_sessions' => 0,
+                'picking_events' => 0,
+                'picking_order_items' => 0,
+                'picking_batch_orders' => 0,
+                'order_backlog_holds' => 0,
+                'order_admin_changes' => 0,
+                'order_events' => 0,
+                'pak_events' => 0,
+                'print_logs' => 0,
+                'pak_order_items' => 0,
+                'pak_orders' => 0,
+            );
+
+            if (!empty($packageIds)) {
+                $in = $this->buildInClause($packageIds, 'pkg');
+                $st = $this->db->prepare("
+                    DELETE FROM package_labels
+                    WHERE package_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['package_labels'] += $st->rowCount();
+            }
+
+            if (!empty($sessionIds)) {
+                $in = $this->buildInClause($sessionIds, 'sid');
+                $st = $this->db->prepare("
+                    DELETE FROM packing_events
+                    WHERE packing_session_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['packing_events'] += $st->rowCount();
+            }
+
+            if (!empty($itemIds)) {
+                $in = $this->buildInClause($itemIds, 'itm');
+                $st = $this->db->prepare("
+                    DELETE FROM packing_session_items
+                    WHERE pak_order_item_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['packing_session_items'] += $st->rowCount();
+            }
+
+            if (!empty($sessionIds)) {
+                $in = $this->buildInClause($sessionIds, 'sid');
+                $st = $this->db->prepare("
+                    DELETE FROM packing_session_items
+                    WHERE packing_session_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['packing_session_items'] += $st->rowCount();
+
+                $st = $this->db->prepare("
+                    DELETE FROM packages
+                    WHERE packing_session_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['packages'] += $st->rowCount();
+            }
+
+            $st = $this->db->prepare("
+                DELETE FROM packing_sessions
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['packing_sessions'] += $st->rowCount();
+
+            if (!empty($pickingOrderItemIds)) {
+                $in = $this->buildInClause($pickingOrderItemIds, 'poi');
+                $st = $this->db->prepare("
+                    DELETE FROM picking_events
+                    WHERE order_item_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['picking_events'] += $st->rowCount();
+            }
+
+            if (!empty($batchOrderIds)) {
+                $in = $this->buildInClause($batchOrderIds, 'boid');
+                $st = $this->db->prepare("
+                    DELETE FROM picking_events
+                    WHERE batch_order_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['picking_events'] += $st->rowCount();
+
+                $st = $this->db->prepare("
+                    DELETE FROM picking_order_items
+                    WHERE batch_order_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['picking_order_items'] += $st->rowCount();
+            }
+
+            $st = $this->db->prepare("
+                DELETE FROM picking_batch_orders
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['picking_batch_orders'] += $st->rowCount();
+
+            if (!empty($itemIds)) {
+                $in = $this->buildInClause($itemIds, 'itm');
+                $st = $this->db->prepare("
+                    DELETE FROM order_backlog_holds
+                    WHERE pak_order_item_id IN (" . $in['clause'] . ")
+                ");
+                $st->execute($in['params']);
+                $deleted['order_backlog_holds'] += $st->rowCount();
+            }
+
+            $st = $this->db->prepare("
+                DELETE FROM order_backlog_holds
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['order_backlog_holds'] += $st->rowCount();
+
+            $st = $this->db->prepare("
+                DELETE FROM order_admin_changes
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['order_admin_changes'] += $st->rowCount();
+
+            $st = $this->db->prepare("
+                DELETE FROM order_events
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['order_events'] += $st->rowCount();
+
+            $st = $this->db->prepare("
+                DELETE FROM pak_events
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['pak_events'] += $st->rowCount();
+
+            $st = $this->db->prepare("
+                DELETE FROM print_logs
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['print_logs'] += $st->rowCount();
+
+            $st = $this->db->prepare("
+                DELETE FROM pak_order_items
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['pak_order_items'] += $st->rowCount();
+
+            $st = $this->db->prepare("
+                DELETE FROM pak_orders
+                WHERE order_code = :order_code
+            ");
+            $st->execute(array(':order_code' => $orderCode));
+            $deleted['pak_orders'] += $st->rowCount();
+
+            $affectedBatches = array();
+            foreach (array_values($affectedBatchIds) as $batchId) {
+                $affectedBatches[] = $this->reconcileBatchAfterForceDelete((int)$batchId);
+            }
+
+            $this->db->commit();
+
+            return array(
+                'order_code' => $orderCode,
+                'deleted_by_user_id' => $changedByUserId,
+                'reason' => $reason,
+                'deleted' => $deleted,
+                'affected_batches' => $affectedBatches,
+            );
+        } catch (Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    private function reconcileBatchAfterForceDelete(int $batchId): array
+    {
+        $st = $this->db->prepare("
+            SELECT
+                id,
+                batch_code,
+                status,
+                workflow_mode,
+                basket_id,
+                packing_owner_user_id,
+                packing_owner_station_id,
+                packing_locked_at
+            FROM picking_batches
+            WHERE id = :batch_id
+            LIMIT 1
+            FOR UPDATE
+        ");
+        $st->execute(array(':batch_id' => $batchId));
+        $batch = $st->fetch(PDO::FETCH_ASSOC);
+
+        if (!$batch) {
+            return array(
+                'batch_id' => $batchId,
+                'state' => 'missing',
+            );
+        }
+
+        $st = $this->db->prepare("
+            SELECT COUNT(DISTINCT po.order_code) AS live_orders_total
+            FROM picking_batch_orders pbo
+            INNER JOIN pak_orders po ON po.order_code = pbo.order_code
+            WHERE pbo.batch_id = :batch_id
+        ");
+        $st->execute(array(':batch_id' => $batchId));
+        $liveOrdersTotal = (int)$st->fetchColumn();
+
+        $st = $this->db->prepare("
+            SELECT COUNT(*) AS active_sessions_total
+            FROM packing_sessions
+            WHERE picking_batch_id = :batch_id
+              AND status IN ('open', 'paused')
+        ");
+        $st->execute(array(':batch_id' => $batchId));
+        $activeSessionsTotal = (int)$st->fetchColumn();
+
+        $basketAction = null;
+        $basketId = !empty($batch['basket_id']) ? (int)$batch['basket_id'] : 0;
+
+        if ($liveOrdersTotal === 0) {
+            if ($basketId > 0) {
+                $basket = $this->fetchBasketForUpdate($basketId);
+                if ($basket && (int)($basket['reserved_batch_id'] ?? 0) === $batchId) {
+                    $st = $this->db->prepare("
+                        UPDATE workflow_baskets
+                        SET status = 'empty',
+                            reserved_batch_id = NULL,
+                            reserved_by_user_id = NULL,
+                            reserved_at = NULL,
+                            picked_ready_at = NULL,
+                            packing_started_at = NULL,
+                            updated_at = NOW()
+                        WHERE id = :basket_id
+                    ");
+                    $st->execute(array(':basket_id' => $basketId));
+                    $basketAction = 'emptied';
+                }
+            }
+
+            $st = $this->db->prepare("
+                UPDATE picking_batches
+                SET basket_id = NULL,
+                    packing_owner_user_id = NULL,
+                    packing_owner_station_id = NULL,
+                    packing_locked_at = NULL,
+                    status = 'abandoned',
+                    abandoned_at = COALESCE(abandoned_at, NOW()),
+                    updated_at = NOW()
+                WHERE id = :batch_id
+            ");
+            $st->execute(array(':batch_id' => $batchId));
+
+            return array(
+                'batch_id' => $batchId,
+                'batch_code' => (string)$batch['batch_code'],
+                'state' => 'abandoned',
+                'live_orders_total' => $liveOrdersTotal,
+                'active_sessions_total' => $activeSessionsTotal,
+                'basket_action' => $basketAction,
+            );
+        }
+
+        if ($activeSessionsTotal === 0) {
+            $st = $this->db->prepare("
+                UPDATE picking_batches
+                SET packing_owner_user_id = NULL,
+                    packing_owner_station_id = NULL,
+                    packing_locked_at = NULL,
+                    updated_at = NOW()
+                WHERE id = :batch_id
+            ");
+            $st->execute(array(':batch_id' => $batchId));
+
+            if ((string)($batch['workflow_mode'] ?? '') === 'split' && $basketId > 0) {
+                $basket = $this->fetchBasketForUpdate($basketId);
+                if ($basket
+                    && (int)($basket['reserved_batch_id'] ?? 0) === $batchId
+                    && (string)($basket['status'] ?? '') === 'packing_in_progress'
+                ) {
+                    $st = $this->db->prepare("
+                        UPDATE workflow_baskets
+                        SET status = 'picked_ready',
+                            packing_started_at = NULL,
+                            updated_at = NOW()
+                        WHERE id = :basket_id
+                    ");
+                    $st->execute(array(':basket_id' => $basketId));
+                    $basketAction = 'reverted_to_picked_ready';
+                }
+            }
+
+            return array(
+                'batch_id' => $batchId,
+                'batch_code' => (string)$batch['batch_code'],
+                'state' => 'released',
+                'live_orders_total' => $liveOrdersTotal,
+                'active_sessions_total' => $activeSessionsTotal,
+                'basket_action' => $basketAction,
+            );
+        }
+
+        return array(
+            'batch_id' => $batchId,
+            'batch_code' => (string)$batch['batch_code'],
+            'state' => 'kept',
+            'live_orders_total' => $liveOrdersTotal,
+            'active_sessions_total' => $activeSessionsTotal,
+            'basket_action' => $basketAction,
+        );
+    }
+
+    private function fetchBasketForUpdate(int $basketId): ?array
+    {
+        $st = $this->db->prepare("
+            SELECT
+                id,
+                basket_no,
+                package_mode,
+                status,
+                reserved_batch_id,
+                reserved_by_user_id,
+                reserved_at,
+                picked_ready_at,
+                packing_started_at
+            FROM workflow_baskets
+            WHERE id = :basket_id
+            LIMIT 1
+            FOR UPDATE
+        ");
+        $st->execute(array(':basket_id' => $basketId));
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
+    }
+
+    private function buildInClause(array $values, string $prefix): array
+    {
+        $params = array();
+        $placeholders = array();
+        $i = 0;
+
+        foreach ($values as $value) {
+            $key = ':' . $prefix . $i;
+            $params[$key] = $value;
+            $placeholders[] = $key;
+            $i++;
+        }
+
+        return array(
+            'clause' => implode(',', $placeholders),
+            'params' => $params,
+        );
+    }
+
 }

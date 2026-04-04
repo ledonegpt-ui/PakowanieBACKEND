@@ -277,6 +277,12 @@ $routes = [
         (new PanelOrdersController($cfg))->update($params);
 
     }],
+
+    ['POST', '/api/v1/panel/orders/{orderCode}/delete-force', function (array $params) use ($cfg): void {
+
+        (new PanelOrdersController($cfg))->deleteForce($params);
+
+    }],
     ['POST', '/api/v1/packing/open-next-ready-batch', function(array $params) use ($cfg): void {
 
         (new PackingController($cfg))->openNextReadyBatch($params);

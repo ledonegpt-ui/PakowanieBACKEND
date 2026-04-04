@@ -80,4 +80,26 @@ final class PanelOrdersController
             ApiResponse::error($e->getMessage(), 400);
         }
     }
+
+    public function deleteForce(array $params): void
+    {
+        global $currentSession;
+
+        try {
+            $orderCode = (string)($params['orderCode'] ?? '');
+            $body = Request::jsonBody();
+
+            $service = $this->boot();
+            $result = $service->deleteForce($orderCode, $body, is_array($currentSession) ? $currentSession : array());
+
+            ApiResponse::ok(array(
+                'module' => 'panel',
+                'action' => 'orders_delete_force',
+                'deleted' => $result['deleted'],
+                'summary' => $result['summary'],
+            ));
+        } catch (Throwable $e) {
+            ApiResponse::error($e->getMessage(), 400);
+        }
+    }
 }

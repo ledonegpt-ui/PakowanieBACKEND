@@ -119,18 +119,6 @@
       } catch { return dateStr; }
     }
 
-    function prettyJson(v) {
-      if (!v) return "";
-      try {
-        if (typeof v === "string") {
-          return JSON.stringify(JSON.parse(v), null, 2);
-        }
-        return JSON.stringify(v, null, 2);
-      } catch {
-        return String(v);
-      }
-    }
-
     // ─── TOAST ────────────────────────────────────────────────────────────────
     function Toast({ toasts }) {
       return (
@@ -343,28 +331,17 @@
             </table>
           </div>
 
-          {selected && (
-            <OrderDetailModal
-              orderCode={selected}
-              onClose={() => setSelected(null)}
-              onDeleted={() => {
-                setSelected(null);
-                fetchOrders({ q, status, carrier });
-              }}
-              toast={toast}
-            />
-          )}
+          {selected && <OrderDetailModal orderCode={selected} onClose={() => setSelected(null)} toast={toast} />}
         </div>
       );
     }
 
     // ─── ORDER DETAIL MODAL ───────────────────────────────────────────────────
-    function OrderDetailModal({ orderCode, onClose, onDeleted, toast }) {
+    function OrderDetailModal({ orderCode, onClose, toast }) {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
       const [editing, setEditing] = useState(false);
       const [saving, setSaving] = useState(false);
-      const [deleting, setDeleting] = useState(false);
       const [form, setForm] = useState({});
       const [copied, setCopied] = useState(false);
 
@@ -406,25 +383,7 @@
         setTimeout(() => setCopied(false), 1500);
       }
 
-      async function forceDeleteOrder() {
-        const ok = window.confirm(`Na pewno usunąć zamówienie ${orderCode} z systemu? Ta operacja usuwa zamówienie i jego powiązania workflow.`);
-        if (!ok) return;
-
-        setDeleting(true);
-        try {
-          await api.post(`/panel/orders/${orderCode}/delete-force`, {});
-          toast("Zamówienie usunięte z systemu");
-          if (typeof onDeleted === "function") onDeleted();
-          else onClose();
-        } catch (e) {
-          toast(e.message, "err");
-        } finally {
-          setDeleting(false);
-        }
-      }
-
       const h = data?.header || {};
-      const shipping = data?.shipping || {};
 
       return (
         <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -490,82 +449,6 @@
                       <InfoRow label="Nr Subiekt" value={h.subiekt_doc_no} />
                       <InfoRow label="Płatność" value={h.payment_done ? "Opłacone" : "Nieopłacone"} />
                       {h.cod_amount > 0 && <InfoRow label="Pobranie" value={`${h.cod_amount} ${h.cod_currency}`} />}
-                    </div>
-
-                    <div className="section-title" style={{ marginTop: 20 }}>Diagnostyka etykiety</div>
-                    <div className="info-block">
-                      <InfoRow label="Label provider" value={shipping?.resolved?.label_provider} />
-                      <InfoRow label="Shipment type" value={shipping?.resolved?.shipment_type} />
-                      <InfoRow label="Service code" value={shipping?.resolved?.service_code} />
-                      <InfoRow label="Wymaga rozmiaru" value={shipping?.resolved?.requires_size ? "Tak" : "Nie"} />
-                      <InfoRow label="Rozmiar" value={shipping?.resolved?.package_size} />
-                      <InfoRow label="Sesja pakowania" value={shipping?.packing_session?.id ? <code className="code">{shipping.packing_session.id}</code> : "—"} />
-                      <InfoRow label="Status sesji" value={shipping?.packing_session?.status} />
-                      <InfoRow label="Package ID" value={shipping?.package?.id ? <code className="code">{shipping.package.id}</code> : "—"} />
-                      <InfoRow label="Status package" value={shipping?.package?.status} />
-                      <InfoRow label="External shipment ID" value={shipping?.package?.external_shipment_id ? <code className="code">{shipping.package.external_shipment_id}</code> : "—"} />
-                      <InfoRow label="Status etykiety" value={shipping?.label?.label_status} />
-                      <InfoRow label="Format etykiety" value={shipping?.label?.label_format} />
-                    </div>
-
-                    {shipping?.latest_error && (
-                      <>
-                        <div className="section-title" style={{ marginTop: 16 }}>Ostatni błąd etykiety</div>
-                        <div className="changes-list">
-                          <div className="change-row">
-                            <div className="change-field">{shipping.latest_error.event_type || "label_generation_failed"}</div>
-                            <div className="change-vals">
-                              <span className="change-new">{shipping.latest_error.event_message || "—"}</span>
-                            </div>
-                            <div className="change-meta">
-                              {fmtDate(shipping.latest_error.created_at)}{shipping.latest_error.created_by_user_id ? ` · user ${shipping.latest_error.created_by_user_id}` : ""}
-                            </div>
-                          </div>
-                          {shipping.latest_error.payload_json && (
-                            <pre style={{marginTop:"10px"}}>{prettyJson(shipping.latest_error.payload_json)}</pre>
-                          )}
-                        </div>
-                      </>
-                    )}
-
-                    {shipping?.label?.raw_response_json && (
-                      <>
-                        <div className="section-title" style={{ marginTop: 16 }}>Ostatnia odpowiedź providera</div>
-                        <pre>{prettyJson(shipping.label.raw_response_json)}</pre>
-                      </>
-                    )}
-
-                    {(shipping?.events || []).length > 0 && (
-                      <>
-                        <div className="section-title" style={{ marginTop: 16 }}>Historia etykiety</div>
-                        <div className="changes-list">
-                          {shipping.events.map(ev => (
-                            <div key={ev.id} className="change-row">
-                              <div className="change-field">{ev.event_type}</div>
-                              <div className="change-vals">
-                                <span className="change-new">{ev.event_message || "—"}</span>
-                              </div>
-                              <div className="change-meta">{fmtDate(ev.created_at)}</div>
-                              {ev.payload_json && <pre style={{marginTop:"10px"}}>{prettyJson(ev.payload_json)}</pre>}
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    )}
-
-                    <div className="section-title" style={{ marginTop: 16 }}>Akcje awaryjne</div>
-                    <div className="edit-actions">
-                      <button
-                        className="btn"
-                        style={{ background: "#b91c1c", color: "#fff" }}
-                        onClick={forceDeleteOrder}
-                        disabled={deleting}
-                      >
-                        {deleting ? "Usuwanie…" : "Usuń z systemu"}
-                      </button>
-                    </div>
-                    <div className="muted" style={{ marginTop: 8 }}>
-                      Używaj tylko wtedy, gdy zamówienia nie da się naprawić i blokuje workflow.
                     </div>
                   </div>
 

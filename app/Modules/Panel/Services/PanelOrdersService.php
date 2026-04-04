@@ -94,6 +94,27 @@ final class PanelOrdersService
         );
     }
 
+    public function deleteForce(string $orderCode, array $body, array $currentSession): array
+    {
+        $orderCode = trim($orderCode);
+        if ($orderCode === '') {
+            throw new RuntimeException('Missing orderCode');
+        }
+
+        $changedByUserId = (int)($currentSession['user_id'] ?? 0);
+        if ($changedByUserId <= 0) {
+            throw new RuntimeException('Missing session user');
+        }
+
+        $reason = trim((string)($body['reason'] ?? ''));
+        $summary = $this->repo->forceDeleteOrder($orderCode, $changedByUserId, $reason);
+
+        return array(
+            'deleted' => true,
+            'summary' => $summary,
+        );
+    }
+
     private function validateEditableFields(array $data): void
     {
         if (isset($data['delivery_fullname']) && $data['delivery_fullname'] === '') {

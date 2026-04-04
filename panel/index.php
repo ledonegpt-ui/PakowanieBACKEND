@@ -299,6 +299,11 @@ section.box{border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bott
                         </section>
 
                         <section class="box">
+                            <h3 style="margin-top:0">Etykieta / diagnostyka wysyłki</h3>
+                            <div id="m_shipping_diag"></div>
+                        </section>
+
+                        <section class="box">
                             <h3 style="margin-top:0">Historia pickingu</h3>
                             <div id="m_events"></div>
                         </section>
@@ -549,6 +554,112 @@ section.box{border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bott
     box.innerHTML = html;
   }
 
+  function renderShippingDiag(shipping) {
+    const box = document.getElementById('m_shipping_diag');
+    if (!box) return;
+
+    if (!shipping || typeof shipping !== 'object') {
+      box.innerHTML = '<div class="small">Brak danych diagnostycznych etykiety.</div>';
+      return;
+    }
+
+    const resolved = shipping.resolved || {};
+    const session = shipping.packing_session || null;
+    const pkg = shipping.package || null;
+    const label = shipping.label || null;
+    const latestError = shipping.latest_error || null;
+    const events = Array.isArray(shipping.events) ? shipping.events : [];
+
+    let html = '';
+
+    html += '<table class="slim">';
+    html += `<tr><th>Label provider</th><td>${esc(resolved.label_provider || '') || '—'}</td></tr>`;
+    html += `<tr><th>Shipment type</th><td>${esc(resolved.shipment_type || '') || '—'}</td></tr>`;
+    html += `<tr><th>Service code</th><td>${esc(resolved.service_code || '') || '—'}</td></tr>`;
+    html += `<tr><th>Requires size</th><td>${resolved.requires_size ? 'tak' : 'nie'}</td></tr>`;
+    html += `<tr><th>Resolved size</th><td>${esc(resolved.package_size || '') || '—'}</td></tr>`;
+    html += '</table>';
+
+    html += '<div style="height:10px"></div>';
+
+    if (session) {
+      html += '<div><strong>Ostatnia sesja pakowania</strong></div>';
+      html += '<table class="slim">';
+      html += `<tr><th>Session ID</th><td>${esc(session.id)}</td></tr>`;
+      html += `<tr><th>Status</th><td>${esc(session.status || '') || '—'}</td></tr>`;
+      html += `<tr><th>User ID</th><td>${esc(session.user_id)}</td></tr>`;
+      html += `<tr><th>Station ID</th><td>${esc(session.station_id)}</td></tr>`;
+      html += `<tr><th>Batch ID</th><td>${esc(session.picking_batch_id)}</td></tr>`;
+      html += `<tr><th>Started</th><td>${esc(session.started_at || '') || '—'}</td></tr>`;
+      html += `<tr><th>Last seen</th><td>${esc(session.last_seen_at || '') || '—'}</td></tr>`;
+      html += '</table>';
+      html += '<div style="height:10px"></div>';
+    } else {
+      html += '<div class="small">Brak sesji pakowania dla tego zamówienia.</div><div style="height:10px"></div>';
+    }
+
+    if (pkg) {
+      html += '<div><strong>Package</strong></div>';
+      html += '<table class="slim">';
+      html += `<tr><th>Package ID</th><td>${esc(pkg.id)}</td></tr>`;
+      html += `<tr><th>Status</th><td>${esc(pkg.status || '') || '—'}</td></tr>`;
+      html += `<tr><th>Service code</th><td>${esc(pkg.service_code || '') || '—'}</td></tr>`;
+      html += `<tr><th>Package size code</th><td>${esc(pkg.package_size_code || '') || '—'}</td></tr>`;
+      html += `<tr><th>Tracking</th><td>${esc(pkg.tracking_number || '') || '—'}</td></tr>`;
+      html += `<tr><th>External shipment ID</th><td>${esc(pkg.external_shipment_id || '') || '—'}</td></tr>`;
+      html += '</table>';
+      html += '<div style="height:10px"></div>';
+    } else {
+      html += '<div class="small">Brak package dla sesji.</div><div style="height:10px"></div>';
+    }
+
+    if (label) {
+      html += '<div><strong>Ostatnia etykieta</strong></div>';
+      html += '<table class="slim">';
+      html += `<tr><th>Label ID</th><td>${esc(label.id)}</td></tr>`;
+      html += `<tr><th>Status</th><td>${esc(label.label_status || '') || '—'}</td></tr>`;
+      html += `<tr><th>Format</th><td>${esc(label.label_format || '') || '—'}</td></tr>`;
+      html += `<tr><th>File token</th><td>${esc(label.file_token || '') || '—'}</td></tr>`;
+      html += `<tr><th>Created</th><td>${esc(label.created_at || '') || '—'}</td></tr>`;
+      html += '</table>';
+      if (label.raw_response_json) {
+        html += `<div class="small" style="margin:8px 0 6px 0">raw_response_json</div><pre>${esc(prettyJson(label.raw_response_json))}</pre>`;
+      }
+      html += '<div style="height:10px"></div>';
+    }
+
+    if (latestError) {
+      html += '<div><strong>Ostatni błąd generowania etykiety</strong></div>';
+      html += '<table class="slim">';
+      html += `<tr><th>Data</th><td>${esc(latestError.created_at || '') || '—'}</td></tr>`;
+      html += `<tr><th>Typ</th><td>${esc(latestError.event_type || '') || '—'}</td></tr>`;
+      html += `<tr><th>User ID</th><td>${esc(latestError.created_by_user_id || '') || '—'}</td></tr>`;
+      html += `<tr><th>Komunikat</th><td>${esc(latestError.event_message || '') || '—'}</td></tr>`;
+      html += '</table>';
+      if (latestError.payload_json) {
+        html += `<div class="small" style="margin:8px 0 6px 0">Payload błędu</div><pre>${esc(prettyJson(latestError.payload_json))}</pre>`;
+      }
+      html += '<div style="height:10px"></div>';
+    } else {
+      html += '<div class="small">Brak zdarzenia label_generation_failed.</div><div style="height:10px"></div>';
+    }
+
+    if (events.length) {
+      html += '<div><strong>Historia zdarzeń etykiety</strong></div>';
+      events.forEach(ev => {
+        html += `
+          <div class="event">
+            <div><strong>${esc(ev.created_at || '')}</strong> — ${esc(ev.event_type || '')}</div>
+            <div>${esc(ev.event_message || '')}</div>
+            ${ev.payload_json ? `<pre>${esc(prettyJson(ev.payload_json))}</pre>` : ''}
+          </div>
+        `;
+      });
+    }
+
+    box.innerHTML = html;
+  }
+
   function fillOrder(order, rawResponse) {
     document.getElementById('btnSaveOrder').disabled = false;
     const header = order.header || {};
@@ -575,6 +686,7 @@ section.box{border:1px solid #e5e7eb;border-radius:10px;padding:12px;margin-bott
 
     renderBatch(order.batch || null);
     renderItems(order.items || []);
+    renderShippingDiag(order.shipping || null);
     renderEvents(order.picking_events || []);
     renderAdminChanges(order.admin_changes || []);
 
