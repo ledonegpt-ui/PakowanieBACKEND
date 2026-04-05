@@ -53,19 +53,8 @@ final class AuthMiddleware
             exit;
         }
 
-        $isPanelAdmin = ((string)($session['login'] ?? '') === 'a008') || ((string)($session['barcode'] ?? '') === 'a008');
-        if (self::isRestrictedAdminPath($path) && !$isPanelAdmin) {
-            ApiResponse::error('Forbidden: panel dostępny tylko dla użytkownika a008', 403);
-            exit;
-        }
-
         $repo->touchSession($token);
 
         return $session;
-    }
-
-    private static function isRestrictedAdminPath(string $path): bool
-    {
-        return strpos($path, '/api/v1/panel/') === 0 || strpos($path, '/api/v1/admin/') === 0;
     }
 }

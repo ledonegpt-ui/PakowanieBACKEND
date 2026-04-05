@@ -56,11 +56,6 @@ final class AdminService
         );
     }
 
-    public function statsProductivity(): array
-    {
-        return $this->repo->getProductivityStats();
-    }
-
     public function statsUserDaily(int $userId, array $query): array
     {
         $days = max(1, min(365, (int)($query['days'] ?? 30)));

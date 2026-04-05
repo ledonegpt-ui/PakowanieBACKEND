@@ -21,7 +21,7 @@ final class PanelOrdersController
         $mapCfg = require BASE_PATH . '/app/Config/shipping_map.php';
 
         $repo = new PanelOrdersRepository($db);
-        return new PanelOrdersService($repo, $mapCfg, $this->cfg);
+        return new PanelOrdersService($repo, $mapCfg);
     }
 
     public function index(): void
@@ -78,36 +78,6 @@ final class PanelOrdersController
             ));
         } catch (Throwable $e) {
             ApiResponse::error($e->getMessage(), 400);
-        }
-    }
-
-    public function generateLabel(array $params): void
-    {
-        global $currentSession;
-
-        try {
-            $orderCode = (string)($params['orderCode'] ?? '');
-            $body = Request::jsonBody();
-
-            $service = $this->boot();
-            $result = $service->generateLabel($orderCode, $body, is_array($currentSession) ? $currentSession : array());
-
-            ApiResponse::ok(array(
-                'module' => 'panel',
-                'action' => 'orders_generate_label',
-                'shipping' => $result,
-            ));
-        } catch (Throwable $e) {
-            ApiResponse::ok(array(
-                'module' => 'panel',
-                'action' => 'orders_generate_label',
-                'shipping' => array(
-                    'order_code' => (string)($params['orderCode'] ?? ''),
-                    'status' => 'failed',
-                    'retry_allowed' => true,
-                    'message' => $e->getMessage(),
-                ),
-            ));
         }
     }
 

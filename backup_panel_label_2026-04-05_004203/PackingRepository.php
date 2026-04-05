@@ -456,20 +456,6 @@ final class PackingRepository
         ]);
     }
 
-    public function updatePackageSizeCode(int $packageId, string $sizeCode): void
-    {
-        $st = $this->db->prepare("
-            UPDATE packages
-            SET package_size_code = :size_code,
-                updated_at        = NOW()
-            WHERE id = :id
-        ");
-        $st->execute([
-            ':size_code' => $sizeCode,
-            ':id'        => $packageId,
-        ]);
-    }
-
     // -------------------------------------------------------------------------
     // PACKAGE LABELS
     // -------------------------------------------------------------------------

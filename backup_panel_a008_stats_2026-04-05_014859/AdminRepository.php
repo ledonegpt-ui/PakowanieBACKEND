@@ -198,6 +198,7 @@ final class AdminRepository
         $st->execute(array(':days' => $days));
         $rows = $st->fetchAll(PDO::FETCH_ASSOC);
 
+        // Uzupełnij brakujące godziny zerami
         $byHour = array();
         foreach ($rows as $r) {
             $byHour[(int)$r['hour']] = (int)$r['packed_count'];
@@ -214,6 +215,7 @@ final class AdminRepository
 
     public function getCarrierStats(int $days): array
     {
+        // Zamówienia wg kuriera i statusu
         $st = $this->db->prepare("
             SELECT
                 COALESCE(NULLIF(po.carrier_code,''), 'unknown')     AS carrier_key,
@@ -225,6 +227,7 @@ final class AdminRepository
         $st->execute();
         $statusRows = $st->fetchAll(PDO::FETCH_ASSOC);
 
+        // Spakowane w zakresie dni wg kuriera z batcha
         $st2 = $this->db->prepare("
             SELECT
                 pb.carrier_key,
@@ -243,6 +246,7 @@ final class AdminRepository
             $periodByCarrier[(string)$r['carrier_key']] = (int)$r['packed_in_period'];
         }
 
+        // Agreguj wg carrier
         $carriers = array();
         foreach ($statusRows as $r) {
             $k = (string)$r['carrier_key'];
@@ -345,269 +349,6 @@ final class AdminRepository
         }, $packingRows);
     }
 
-    // ─── PRODUCTIVITY STATS ──────────────────────────────────────────────────
-
-    public function getProductivityStats(): array
-    {
-        $now = new DateTimeImmutable('now');
-        $windows = array(
-            '1h'  => array('label' => 'Ostatnia godzina', 'start' => $now->sub(new DateInterval('PT1H'))),
-            '24h' => array('label' => 'Ostatnie 24 godziny', 'start' => $now->sub(new DateInterval('P1D'))),
-            '7d'  => array('label' => 'Ostatnie 7 dni', 'start' => $now->sub(new DateInterval('P7D'))),
-            '30d' => array('label' => 'Ostatnie 30 dni', 'start' => $now->sub(new DateInterval('P30D'))),
-        );
-
-        $result = array();
-        foreach ($windows as $key => $cfg) {
-            $result[$key] = array(
-                'label' => $cfg['label'],
-                'users' => $this->buildProductivityWindow(
-                    $cfg['start']->format('Y-m-d H:i:s'),
-                    $now->format('Y-m-d H:i:s')
-                ),
-            );
-        }
-
-        return array(
-            'generated_at' => $now->format('Y-m-d H:i:s'),
-            'windows' => $result,
-        );
-    }
-
-    private function buildProductivityWindow(string $windowStart, string $windowEnd): array
-    {
-        $users = array();
-        $windowStartTs = strtotime($windowStart);
-        $windowEndTs = strtotime($windowEnd);
-
-        foreach ($this->loadPackingTasksForWindow($windowStart, $windowEnd) as $task) {
-            $uid = (int)$task['user_id'];
-            if (!isset($users[$uid])) {
-                $users[$uid] = $this->blankProductivityUser($uid, (string)$task['login'], (string)$task['display_name']);
-            }
-            $users[$uid]['tasks'][] = array(
-                'type' => 'packing',
-                'started_at' => (string)$task['started_at'],
-                'ended_at' => (string)$task['ended_at'],
-                'packed_count' => 1,
-                'picked_orders' => 0,
-                'dropped_orders' => 0,
-            );
-        }
-
-        foreach ($this->loadPickingTasksForWindow($windowStart, $windowEnd) as $task) {
-            $uid = (int)$task['user_id'];
-            if (!isset($users[$uid])) {
-                $users[$uid] = $this->blankProductivityUser($uid, (string)$task['login'], (string)$task['display_name']);
-            }
-            $users[$uid]['tasks'][] = array(
-                'type' => 'picking',
-                'started_at' => (string)$task['started_at'],
-                'ended_at' => (string)$task['ended_at'],
-                'packed_count' => 0,
-                'picked_orders' => (int)$task['picked_orders'],
-                'dropped_orders' => (int)$task['dropped_orders'],
-            );
-        }
-
-        $rows = array();
-        foreach ($users as $uid => $user) {
-            $rows[] = $this->summarizeUserProductivity($user, $windowStartTs, $windowEndTs);
-        }
-
-        usort($rows, function ($a, $b) {
-            if ($a['active_seconds'] === $b['active_seconds']) {
-                if ($a['packed_count'] === $b['packed_count']) {
-                    return $b['picked_orders'] <=> $a['picked_orders'];
-                }
-                return $b['packed_count'] <=> $a['packed_count'];
-            }
-            return $b['active_seconds'] <=> $a['active_seconds'];
-        });
-
-        return $rows;
-    }
-
-    private function loadPackingTasksForWindow(string $windowStart, string $windowEnd): array
-    {
-        $st = $this->db->prepare("
-            SELECT
-                ps.user_id,
-                u.login,
-                u.display_name,
-                ps.started_at,
-                ps.completed_at AS ended_at
-            FROM packing_sessions ps
-            INNER JOIN users u ON u.id = ps.user_id
-            WHERE ps.status = 'completed'
-              AND ps.started_at IS NOT NULL
-              AND ps.completed_at IS NOT NULL
-              AND ps.completed_at > :window_start
-              AND ps.started_at < :window_end
-        ");
-        $st->execute(array(
-            ':window_start' => $windowStart,
-            ':window_end'   => $windowEnd,
-        ));
-        return $st->fetchAll(PDO::FETCH_ASSOC);
-    }
-
-    private function loadPickingTasksForWindow(string $windowStart, string $windowEnd): array
-    {
-        $st = $this->db->prepare("
-            SELECT
-                pb.user_id,
-                u.login,
-                u.display_name,
-                pb.started_at,
-                pb.completed_at AS ended_at,
-                SUM(CASE WHEN pbo.status = 'picked' THEN 1 ELSE 0 END) AS picked_orders,
-                SUM(CASE WHEN pbo.status = 'dropped' THEN 1 ELSE 0 END) AS dropped_orders
-            FROM picking_batches pb
-            INNER JOIN users u ON u.id = pb.user_id
-            LEFT JOIN picking_batch_orders pbo ON pbo.batch_id = pb.id
-            WHERE pb.started_at IS NOT NULL
-              AND pb.completed_at IS NOT NULL
-              AND pb.completed_at > :window_start
-              AND pb.started_at < :window_end
-            GROUP BY pb.id, pb.user_id, u.login, u.display_name, pb.started_at, pb.completed_at
-        ");
-        $st->execute(array(
-            ':window_start' => $windowStart,
-            ':window_end'   => $windowEnd,
-        ));
-        return $st->fetchAll(PDO::FETCH_ASSOC);
-    }
-
-    private function blankProductivityUser(int $userId, string $login, string $displayName): array
-    {
-        return array(
-            'user_id' => $userId,
-            'login' => $login,
-            'display_name' => $displayName,
-            'tasks' => array(),
-        );
-    }
-
-    private function summarizeUserProductivity(array $user, int $windowStartTs, int $windowEndTs): array
-    {
-        usort($user['tasks'], function ($a, $b) {
-            return strcmp($a['started_at'], $b['started_at']);
-        });
-
-        $packingActive = 0;
-        $pickingActive = 0;
-        $packedCount = 0;
-        $pickedOrders = 0;
-        $droppedOrders = 0;
-        $batchesCount = 0;
-        $gapSeconds = 0;
-        $firstStart = null;
-        $lastEnd = null;
-        $prevEnd = null;
-        $taskCount = 0;
-
-        foreach ($user['tasks'] as $task) {
-            $startTs = strtotime((string)$task['started_at']);
-            $endTs = strtotime((string)$task['ended_at']);
-            if (!$startTs || !$endTs || $endTs <= $startTs) {
-                continue;
-            }
-
-            $clipped = $this->clipInterval($startTs, $endTs, $windowStartTs, $windowEndTs);
-            if ($clipped === null) {
-                continue;
-            }
-
-            $taskCount++;
-            $clipStart = $clipped['start'];
-            $clipEnd = $clipped['end'];
-            $duration = $clipEnd - $clipStart;
-
-            if ($firstStart === null || $clipStart < $firstStart) {
-                $firstStart = $clipStart;
-            }
-            if ($lastEnd === null || $clipEnd > $lastEnd) {
-                $lastEnd = $clipEnd;
-            }
-
-            if ($prevEnd !== null && $clipStart > $prevEnd) {
-                $gapSeconds += ($clipStart - $prevEnd);
-            }
-            if ($prevEnd === null || $clipEnd > $prevEnd) {
-                $prevEnd = $clipEnd;
-            }
-
-            if ($task['type'] === 'packing') {
-                $packingActive += $duration;
-                $packedCount += (int)$task['packed_count'];
-            } else {
-                $pickingActive += $duration;
-                $pickedOrders += (int)$task['picked_orders'];
-                $droppedOrders += (int)$task['dropped_orders'];
-                $batchesCount++;
-            }
-        }
-
-        $activeSeconds = $packingActive + $pickingActive;
-        $observedSeconds = ($firstStart !== null && $lastEnd !== null && $lastEnd > $firstStart) ? ($lastEnd - $firstStart) : 0;
-        $observedIdle = max(0, $observedSeconds - $activeSeconds);
-        $windowSeconds = max(1, $windowEndTs - $windowStartTs);
-
-        $packingOrdersPerHour = $packingActive > 0 ? round($packedCount / ($packingActive / 3600), 2) : null;
-        $pickingOrdersPerHour = $pickingActive > 0 ? round($pickedOrders / ($pickingActive / 3600), 2) : null;
-
-        return array(
-            'user_id' => (int)$user['user_id'],
-            'login' => (string)$user['login'],
-            'display_name' => (string)$user['display_name'],
-            'task_count' => $taskCount,
-            'packed_count' => $packedCount,
-            'picked_orders' => $pickedOrders,
-            'dropped_orders' => $droppedOrders,
-            'batches_count' => $batchesCount,
-
-            'packing_active_seconds' => $packingActive,
-            'packing_active_label' => self::formatClock($packingActive),
-
-            'picking_active_seconds' => $pickingActive,
-            'picking_active_label' => self::formatClock($pickingActive),
-
-            'active_seconds' => $activeSeconds,
-            'active_label' => self::formatClock($activeSeconds),
-
-            'gap_between_tasks_seconds' => $gapSeconds,
-            'gap_between_tasks_label' => self::formatClock($gapSeconds),
-
-            'observed_seconds' => $observedSeconds,
-            'observed_label' => self::formatClock($observedSeconds),
-
-            'observed_idle_seconds' => $observedIdle,
-            'observed_idle_label' => self::formatClock($observedIdle),
-
-            'window_idle_seconds' => max(0, $windowSeconds - $activeSeconds),
-            'window_idle_label' => self::formatClock(max(0, $windowSeconds - $activeSeconds)),
-
-            'utilization_window_pct' => round(($activeSeconds / $windowSeconds) * 100, 1),
-            'utilization_observed_pct' => $observedSeconds > 0 ? round(($activeSeconds / $observedSeconds) * 100, 1) : 0.0,
-
-            'packing_orders_per_active_hour' => $packingOrdersPerHour,
-            'picking_orders_per_active_hour' => $pickingOrdersPerHour,
-        );
-    }
-
-    private function clipInterval(int $startTs, int $endTs, int $windowStartTs, int $windowEndTs): ?array
-    {
-        $clipStart = max($startTs, $windowStartTs);
-        $clipEnd = min($endTs, $windowEndTs);
-
-        if ($clipEnd <= $clipStart) {
-            return null;
-        }
-
-        return array('start' => $clipStart, 'end' => $clipEnd);
-    }
-
     // ─── USER DAILY BREAKDOWN ────────────────────────────────────────────────
 
     public function getUserDailyStats(int $userId, int $days): array
@@ -644,6 +385,7 @@ final class AdminRepository
         $st2->execute(array(':user_id' => $userId, ':days' => $days));
         $picking = $st2->fetchAll(PDO::FETCH_ASSOC);
 
+        // Połącz po dniu
         $byDay = array();
         foreach ($packing as $r) {
             $d = $r['day'];
@@ -675,17 +417,9 @@ final class AdminRepository
 
     private static function formatSeconds(int $sec): string
     {
-        return self::formatClock($sec);
-    }
-
-    private static function formatClock(int $sec): string
-    {
-        $sec = max(0, $sec);
-        $hours = intdiv($sec, 3600);
-        $minutes = intdiv($sec % 3600, 60);
-        $seconds = $sec % 60;
-        return str_pad((string)$hours, 2, '0', STR_PAD_LEFT)
-            . ':' . str_pad((string)$minutes, 2, '0', STR_PAD_LEFT)
-            . ':' . str_pad((string)$seconds, 2, '0', STR_PAD_LEFT);
+        if ($sec < 60) return $sec . 's';
+        $m = intdiv($sec, 60);
+        $s = $sec % 60;
+        return $m . 'm ' . str_pad((string)$s, 2, '0', STR_PAD_LEFT) . 's';
     }
 }

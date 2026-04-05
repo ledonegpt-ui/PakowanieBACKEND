@@ -66,19 +66,6 @@ final class AdminController
         } catch (Throwable $e) { ApiResponse::error($e->getMessage(), 400); }
     }
 
-    public function statsProductivity(): void
-    {
-        try {
-            $r = $this->boot()->statsProductivity();
-            ApiResponse::ok(array(
-                'module' => 'admin',
-                'action' => 'stats_productivity',
-                'generated_at' => $r['generated_at'],
-                'windows' => $r['windows'],
-            ));
-        } catch (Throwable $e) { ApiResponse::error($e->getMessage(), 400); }
-    }
-
     public function statsUserDaily(array $params): void
     {
         try {

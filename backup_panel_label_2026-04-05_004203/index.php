@@ -278,12 +278,6 @@ $routes = [
 
     }],
 
-    ['POST', '/api/v1/panel/orders/{orderCode}/generate-label', function (array $params) use ($cfg): void {
-
-        (new PanelOrdersController($cfg))->generateLabel($params);
-
-    }],
-
     ['POST', '/api/v1/panel/orders/{orderCode}/delete-force', function (array $params) use ($cfg): void {
 
         (new PanelOrdersController($cfg))->deleteForce($params);
@@ -375,12 +369,6 @@ $routes = [
     ['GET', '/api/v1/admin/stats/carriers', function (array $params) use ($cfg): void {
 
         (new AdminController($cfg))->statsCarriers();
-
-    }],
-
-    ['GET', '/api/v1/admin/stats/productivity', function (array $params) use ($cfg): void {
-
-        (new AdminController($cfg))->statsProductivity();
 
     }],
 

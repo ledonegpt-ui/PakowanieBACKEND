@@ -9,14 +9,10 @@ final class PanelOrdersService
     /** @var array */
     private $mapCfg;
 
-    /** @var array */
-    private $cfg;
-
-    public function __construct(PanelOrdersRepository $repo, array $mapCfg, array $cfg)
+    public function __construct(PanelOrdersRepository $repo, array $mapCfg)
     {
         $this->repo = $repo;
         $this->mapCfg = $mapCfg;
-        $this->cfg = $cfg;
     }
 
     public function search(array $query): array
@@ -96,25 +92,6 @@ final class PanelOrdersService
             'changes' => $update['changes'],
             'order' => $detail,
         );
-    }
-
-    public function generateLabel(string $orderCode, array $body, array $currentSession): array
-    {
-        $orderCode = trim($orderCode);
-        if ($orderCode === '') {
-            throw new RuntimeException('Missing orderCode');
-        }
-
-        $size = trim((string)($body['size'] ?? ''));
-
-        require_once BASE_PATH . '/app/Lib/Db.php';
-        require_once BASE_PATH . '/app/Modules/Packing/Repositories/PackingRepository.php';
-        require_once BASE_PATH . '/app/Modules/Shipping/Services/ShippingService.php';
-
-        $shippingRepo = new PackingRepository(Db::mysql($this->cfg));
-        $shippingService = new ShippingService($shippingRepo, $this->cfg);
-
-        return $shippingService->generateLabel($orderCode, $currentSession, $size, false, true);
     }
 
     public function deleteForce(string $orderCode, array $body, array $currentSession): array

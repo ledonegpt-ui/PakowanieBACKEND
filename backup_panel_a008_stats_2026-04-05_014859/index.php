@@ -378,12 +378,6 @@ $routes = [
 
     }],
 
-    ['GET', '/api/v1/admin/stats/productivity', function (array $params) use ($cfg): void {
-
-        (new AdminController($cfg))->statsProductivity();
-
-    }],
-
     ['GET', '/api/v1/admin/stats/users/{userId}/daily', function (array $params) use ($cfg): void {
         (new AdminController($cfg))->statsUserDaily($params);
 

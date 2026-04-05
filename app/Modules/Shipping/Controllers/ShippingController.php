@@ -42,9 +42,16 @@ final class ShippingController
         return new PackingRepository(Db::mysql($cfg));
     }
 
+    private function bootShippingService(PackingRepository $repo): ShippingService
+    {
+        global $cfg;
+        require_once BASE_PATH . '/app/Modules/Shipping/Services/ShippingService.php';
+        return new ShippingService($repo, $cfg);
+    }
+
     public function generateLabel(array $params = []): void
     {
-        global $currentSession, $cfg;
+        global $currentSession;
         try {
             $orderCode = (string)($params['orderId'] ?? '');
             if ($orderCode === '') {
@@ -52,218 +59,37 @@ final class ShippingController
                 return;
             }
 
-            $body        = Request::jsonBody();
-            $sizeParam   = (string)($body['size'] ?? '');   // A / B / C lub puste
+            $body      = Request::jsonBody();
+            $sizeParam = (string)($body['size'] ?? '');
+
+            $print = true;
+            if (array_key_exists('print', $body)) {
+                $parsed = filter_var($body['print'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+                $print = $parsed === null ? true : (bool)$parsed;
+            }
 
             $repo = $this->bootPacking();
-
-            // znajdź sesję
-            $packingSession = $repo->findSessionByOrderCode($orderCode);
-            if (!$packingSession || $packingSession['status'] !== 'open') {
-                $this->respondLabelFailure($orderCode, 'No open packing session for order: ' . $orderCode);
-                return;
-            }
-            if ((int)$packingSession['user_id'] !== (int)$currentSession['user_id']) {
-                $this->respondLabelFailure($orderCode, 'Session does not belong to current operator');
-                return;
-            }
-
-            $sessionId = (int)$packingSession['id'];
-
-            // znajdź zamówienie
-            $order = $repo->findOrder($orderCode);
-            if (!$order) {
-                $this->respondLabelFailure($orderCode, 'Order not found: ' . $orderCode, $sessionId, (int)$currentSession['user_id'], $repo);
-                return;
-            }
-
-            // resolve shipping
-            require_once BASE_PATH . '/app/Support/ShippingMethodResolver.php';
-            $mapCfg   = require BASE_PATH . '/app/Config/shipping_map.php';
-            $resolver = new ShippingMethodResolver($mapCfg);
-            $resolved = $resolver->resolve([
-                'delivery_method' => (string)($order['delivery_method'] ?? ''),
-                'carrier_code'    => (string)($order['carrier_code'] ?? ''),
-                'courier_code'    => (string)($order['courier_code'] ?? ''),
-            ]);
-
-            if (empty($resolved['label_provider'])) {
-                $this->respondLabelFailure($orderCode, 'Cannot determine label provider for this order', $sessionId, (int)$currentSession['user_id'], $repo);
-                return;
-            }
-
-            $labelProvider  = (string)$resolved['label_provider'];
-            $requiresSize   = (bool)($resolved['requires_size'] ?? false);
-
-            // paczkomat InPost wymaga rozmiaru — jeśli nie podano, zwróć żądanie
-            if ($requiresSize && $sizeParam === '') {
-                ApiResponse::ok([
-                    'shipping' => [
-                        'order_code'    => $orderCode,
-                        'requires_size' => true,
-                        'size_options'  => ['A', 'B', 'C'],
-                        'message'       => 'Podaj rozmiar paczki: A / B / C',
-                    ]
-                ]);
-                return;
-            }
-
-            // przekaż rozmiar do resolved żeby adapter go użył
-            if ($sizeParam !== '') {
-                $resolved['package_size'] = strtoupper($sizeParam);
-            }
-
-            // znajdź lub utwórz package
-            $package = $repo->findPackageBySession($sessionId);
-            if (!$package) {
-                $provider = $repo->findProviderByCode($this->resolveProviderCode($labelProvider));
-                $packageId = $repo->createPackage(
-                    $sessionId,
-                    1,
-                    $provider ? (int)$provider['id'] : null,
-                    (string)($resolved['service_code'] ?? $labelProvider)
-                );
-                $package = $repo->findPackageBySession($sessionId);
-            }
-
-            // sprawdź czy etykieta już istnieje
-            $existingLabel = $repo->findLabelByPackage((int)$package['id']);
-            if ($existingLabel) {
-                ApiResponse::ok([
-                    'shipping' => [
-                        'order_code'      => $orderCode,
-                        'tracking_number' => $package['tracking_number'],
-                        'label_format'    => $existingLabel['label_format'],
-                        'label_status'    => $existingLabel['label_status'],
-                        'file_token'      => $existingLabel['file_token'],
-                        'source'          => 'cached',
-                    ]
-                ]);
-                return;
-            }
-
-            // ----------------------------------------------------------------
-            // TRYB DEBUG — ustawić LABEL_DEBUG_MODE=1 w .env
-            // Nie wywołuje żadnego adaptera ani drukarki.
-            // Zapisuje do bazy fałszywą etykietę i zwraca sukces.
-            // ----------------------------------------------------------------
-            $debugMode = (bool)(int)($_ENV['LABEL_DEBUG_MODE'] ?? getenv('LABEL_DEBUG_MODE') ?? 0);
-
-            if ($debugMode) {
-                $fakeTracking = 'DEBUG-' . strtoupper($labelProvider) . '-' . date('ymdHis') . '-' . substr($orderCode, -6);
-                $fakeToken    = 'debug_' . md5($orderCode . time());
-
-                $repo->updatePackageLabel(
-                    (int)$package['id'],
-                    $fakeTracking,
-                    null,
-                    'ok'
-                );
-
-                $repo->createLabel(
-                    (int)$package['id'],
-                    'debug',
-                    'ok',
-                    null,
-                    $fakeToken,
-                    json_encode(['debug' => true, 'provider' => $labelProvider], JSON_UNESCAPED_UNICODE)
-                );
-
-                $repo->logEvent(
-                    $sessionId, 'label_generated',
-                    '[DEBUG] Fake label for ' . $labelProvider,
-                    [
-                        'order_code'      => $orderCode,
-                        'label_provider'  => $labelProvider,
-                        'tracking_number' => $fakeTracking,
-                        'debug_mode'      => true,
-                        'user_id'         => (int)$currentSession['user_id'],
-                    ],
-                    (int)$currentSession['user_id']
-                );
-
-                ApiResponse::ok([
-                    'shipping' => [
-                        'order_code'      => $orderCode,
-                        'tracking_number' => $fakeTracking,
-                        'label_format'    => 'debug',
-                        'label_status'    => 'ok',
-                        'file_token'      => $fakeToken,
-                        'source'          => 'debug',
-                    ]
-                ]);
-                return;
-            }
-
-            // pobierz config providera
-            $provider    = $repo->findProviderByCode($this->resolveProviderCode($labelProvider));
-            $providerCfg = $provider ? json_decode((string)($provider['config_json'] ?? '{}'), true) : [];
-
-            // wywołaj adapter
-            require_once BASE_PATH . '/app/Modules/Shipping/ShippingAdapterFactory.php';
-            $adapter = ShippingAdapterFactory::make($labelProvider, $cfg);
-            $result  = $adapter->generateLabel($order, $package, $resolved, $providerCfg ?: []);
-
-            // zapisz wynik
-            $repo->updatePackageLabel(
-                (int)$package['id'],
-                (string)$result['tracking_number'],
-                $result['external_shipment_id'] ?? null,
-                (string)($result['label_status'] ?? 'ok')
-            );
-
-            $repo->createLabel(
-                (int)$package['id'],
-                (string)($result['label_format'] ?? 'pdf'),
-                (string)($result['label_status'] ?? 'ok'),
-                $result['file_path'] ?? null,
-                $result['file_token'] ?? null,
-                json_encode($result['raw_response'] ?? [], JSON_UNESCAPED_UNICODE)
-            );
-
-            // drukuj na Zebrze przypisanej do stacji operatora
-            require_once BASE_PATH . '/app/Support/ZebraPrinter.php';
-            $stationCode = (string)($currentSession['station_code'] ?? '');
-            if ($stationCode !== '' && isset($result['file_path']) && $result['file_path'] !== '') {
-                $fullPath = BASE_PATH . '/storage/labels/' . $result['file_path'];
-                if (file_exists($fullPath)) {
-                    try {
-                        ZebraPrinter::print($stationCode, $fullPath);
-                    } catch (Throwable $printErr) {
-                        // log błędu druku ale nie przerywaj — etykieta jest wygenerowana
-                        error_log('ZebraPrinter error: ' . $printErr->getMessage());
-                    }
-                }
-            }
-
-            $repo->logEvent(
-                $sessionId, 'label_generated',
-                'Label generated via ' . $labelProvider,
-                [
-                    'order_code'       => $orderCode,
-                    'label_provider'   => $labelProvider,
-                    'tracking_number'  => $result['tracking_number'],
-                    'user_id'          => (int)$currentSession['user_id'],
-                ],
-                (int)$currentSession['user_id']
-            );
+            $service = $this->bootShippingService($repo);
+            $result = $service->generateLabel($orderCode, is_array($currentSession) ? $currentSession : [], $sizeParam, $print, false);
 
             ApiResponse::ok([
-                'shipping' => [
-                    'order_code'      => $orderCode,
-                    'tracking_number' => $result['tracking_number'],
-                    'label_format'    => $result['label_format'] ?? 'pdf',
-                    'label_status'    => $result['label_status'] ?? 'ok',
-                    'file_token'      => $result['file_token'] ?? null,
-                    'source'          => 'generated',
-                ]
+                'shipping' => $result
             ]);
 
         } catch (Throwable $e) {
             $safeOrderCode = isset($orderCode) ? (string)$orderCode : '';
-            $safeSessionId = isset($sessionId) ? (int)$sessionId : 0;
             $safeUserId = isset($currentSession['user_id']) ? (int)$currentSession['user_id'] : 0;
             $safeRepo = isset($repo) ? $repo : null;
+            $safeSessionId = 0;
+
+            if ($safeOrderCode !== '' && $safeRepo !== null) {
+                try {
+                    $failedSession = $safeRepo->findSessionByOrderCode($safeOrderCode);
+                    $safeSessionId = (int)($failedSession['id'] ?? 0);
+                } catch (Throwable $ignored) {
+                    $safeSessionId = 0;
+                }
+            }
 
             $this->respondLabelFailure(
                 $safeOrderCode,
